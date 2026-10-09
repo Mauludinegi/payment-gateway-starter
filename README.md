@@ -222,6 +222,8 @@ This uses the [Core API](https://docs.midtrans.com/reference/charge-transactions
 - Dev sign-in and the simulator are off, the database pool is 3 connections per instance, and `PAYMENTS_EXPIRY_ON_REQUEST=true` lets requests start the expiry check, since the schedule never fires while no instance runs.
 - `vercel.json` pins the region to Singapore (`sin1`) and adds a daily cron to `/internal/expiry` as a backstop. The Hobby plan allows daily crons only; on Pro, run it every few minutes.
 
+With Supabase, point Vercel at the transaction pooler (port `6543`, with `prepareThreshold=0` in `DATABASE_URL`): the session pooler allows only 15 clients, which a few instances plus a local run use up.
+
 In the project's environment variables, set `PORT=8080` (Vercel sends traffic to port 80 otherwise), `CRON_SECRET` (any long random string), and the variables from [Before going live](#before-going-live). Then point the gateway webhooks and the web app's `NUXT_API_BASE` at the deployment's domain.
 
 ## Tests
