@@ -7,13 +7,14 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import java.time.Duration;
 import java.util.EnumMap;
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * @param defaultProvider gateway used for channels without a routing entry
  * @param routing         per-channel gateway, e.g. send OVO to Xendit and GoPay to Midtrans
  * @param orderTtl        how long an order can be paid
  * @param paymentTtl      how long one payment attempt (VA number, QR, code) stays valid
- * @param returnUrl       where e-wallets send the customer back after paying
+ * @param returnUrl       where e-wallets send the customer back after paying; {orderId} is replaced
  */
 @ConfigurationProperties("payments")
 public record PaymentsProperties(
@@ -31,10 +32,14 @@ public record PaymentsProperties(
         routing = routing == null ? new EnumMap<>(Channel.class) : routing;
         orderTtl = orderTtl == null ? Duration.ofHours(24) : orderTtl;
         paymentTtl = paymentTtl == null ? Duration.ofHours(1) : paymentTtl;
-        returnUrl = returnUrl == null ? "http://localhost:8080/" : returnUrl;
+        returnUrl = returnUrl == null ? "http://localhost:3000/orders/{orderId}" : returnUrl;
         xendit = xendit == null ? new Xendit(null, null, null) : xendit;
         midtrans = midtrans == null ? new Midtrans(null, null) : midtrans;
         simulator = simulator == null ? new Simulator(true, null) : simulator;
+    }
+
+    public String returnUrlFor(UUID orderId) {
+        return returnUrl.replace("{orderId}", orderId.toString());
     }
 
     public Provider providerFor(Channel channel) {

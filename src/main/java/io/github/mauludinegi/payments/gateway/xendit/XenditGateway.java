@@ -52,13 +52,13 @@ public class XenditGateway implements PaymentGateway {
             Map.entry(Channel.ALFAMART, "ALFAMART")));
 
     private final PaymentsProperties.Xendit config;
-    private final String returnUrl;
+    private final PaymentsProperties properties;
     private final RestClient http;
     private final JsonMapper json;
 
     public XenditGateway(RestClient.Builder builder, PaymentsProperties properties, JsonMapper json) {
         this.config = properties.xendit();
-        this.returnUrl = properties.returnUrl();
+        this.properties = properties;
         this.json = json;
         String basic = Base64.getEncoder().encodeToString(((config.secretKey() == null ? "" : config.secretKey()) + ":").getBytes(StandardCharsets.UTF_8));
         this.http = builder.clone()
@@ -159,8 +159,8 @@ public class XenditGateway implements PaymentGateway {
                     }
                     props.put("account_mobile_number", request.mobileNumber());
                 } else {
-                    props.put("success_return_url", returnUrl);
-                    props.put("failure_return_url", returnUrl);
+                    props.put("success_return_url", returnUrlFor(request));
+                    props.put("failure_return_url", returnUrlFor(request));
                 }
             }
         }
@@ -214,5 +214,9 @@ public class XenditGateway implements PaymentGateway {
 
     private static boolean notBlank(String value) {
         return value != null && !value.isBlank();
+    }
+
+    private String returnUrlFor(PaymentRequest request) {
+        return properties.returnUrlFor(request.orderId());
     }
 }

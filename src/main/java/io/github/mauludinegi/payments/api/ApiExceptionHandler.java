@@ -1,5 +1,6 @@
 package io.github.mauludinegi.payments.api;
 
+import io.github.mauludinegi.payments.admin.AdminAuth;
 import io.github.mauludinegi.payments.gateway.GatewayException;
 import io.github.mauludinegi.payments.gateway.GatewayRegistry;
 import io.github.mauludinegi.payments.gateway.InvalidWebhookException;
@@ -38,6 +39,11 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
     ProblemDetail invalidWebhook(InvalidWebhookException e) {
         log.warn("Rejected webhook: {}", e.getMessage());
         return ProblemDetail.forStatusAndDetail(HttpStatus.UNAUTHORIZED, "Invalid webhook signature");
+    }
+
+    @ExceptionHandler(AdminAuth.UnauthorizedException.class)
+    ProblemDetail unauthorized(AdminAuth.UnauthorizedException e) {
+        return ProblemDetail.forStatusAndDetail(HttpStatus.UNAUTHORIZED, e.getMessage());
     }
 
     @ExceptionHandler(GatewayRegistry.GatewayNotConfiguredException.class)

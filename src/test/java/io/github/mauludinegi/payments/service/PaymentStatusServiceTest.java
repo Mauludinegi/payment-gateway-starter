@@ -37,7 +37,7 @@ class PaymentStatusServiceTest {
 
     @BeforeEach
     void setUp() {
-        order = new Order("ORD-1", "Plan", 150_000, "Budi", NOW, NOW.plus(Duration.ofDays(1)));
+        order = new Order("ORD-1", "Plan", 150_000, "Budi", null, NOW, NOW.plus(Duration.ofDays(1)));
     }
 
     private PaymentAttempt attempt(PaymentStatus status) {

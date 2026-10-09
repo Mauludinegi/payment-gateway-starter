@@ -4,10 +4,12 @@ A Spring Boot backend for taking Indonesian payments (virtual accounts, QRIS, e-
 
 It runs with zero setup: a built-in **simulator** gateway stands in for the real ones, so you can click through the whole checkout before you have API keys.
 
+The storefront and admin dashboard live in a separate repo: **[payment-gateway-starter-web](https://github.com/Mauludinegi/payment-gateway-starter-web)** (Nuxt 4 + Nuxt UI).
+
 <table>
   <tr>
-    <td><img src="docs/02-channels.png" alt="Choosing a payment method" width="360"></td>
-    <td><img src="docs/03-instructions.png" alt="Virtual account instructions with live status" width="360"></td>
+    <td><img src="docs/checkout-qris.png" alt="QRIS payment page in the web app" width="420"></td>
+    <td><img src="docs/admin-order.png" alt="Admin order detail with payment attempts and webhooks" width="420"></td>
   </tr>
 </table>
 
@@ -19,7 +21,15 @@ Requires Java 21+.
 ./mvnw spring-boot:run
 ```
 
-Open http://localhost:8080, create an order, pick a method, then press **Simulate paid**. The page polls the order and flips to *Payment received* when the signed webhook is processed.
+The API is on http://localhost:8080. For the store and admin UI, run the [web app](https://github.com/Mauludinegi/payment-gateway-starter-web) next to it, or try the API directly:
+
+```bash
+ORDER=$(curl -s localhost:8080/api/orders -H 'content-type: application/json' \
+  -d '{"items":[{"productId":"course-k8s","quantity":1}],"customerName":"Budi"}' | jq -r .id)
+curl -s localhost:8080/api/orders/$ORDER/payments -H 'content-type: application/json' -d '{"channel":"BCA_VA"}'
+curl -s -X POST localhost:8080/api/simulator/orders/$ORDER/pay      # the simulator sends a signed webhook
+curl -s localhost:8080/api/orders/$ORDER | jq .status              # "PAID"
+```
 
 With PostgreSQL instead of the in-memory H2 database:
 
@@ -70,12 +80,23 @@ payments:
 
 | Method | Path | Notes |
 | --- | --- | --- |
+| `GET` | `/api/products` | Active products from the catalogue |
 | `GET` | `/api/channels` | Channels whose gateway is configured |
-| `POST` | `/api/orders` | `{description, amount, customerName}`; amount in IDR, 1,000 to 100,000,000 |
-| `GET` | `/api/orders/{id}` | Order with its latest payment and instructions |
+| `POST` | `/api/orders` | `{items: [{productId, quantity}], customerName, customerEmail?}`; prices come from the catalogue, never the client |
+| `GET` | `/api/orders/{id}` | Order with items, its latest payment, and instructions |
 | `POST` | `/api/orders/{id}/payments` | `{channel, mobileNumber?}`; `mobileNumber` (`+62…`) is required for OVO |
 | `POST` | `/webhooks/{xendit\|midtrans}` | Gateway notifications |
 | `POST` | `/api/simulator/orders/{id}/{pay\|fail\|expire}` | Simulator only; disable in production |
+
+Admin endpoints need `Authorization: Bearer $ADMIN_TOKEN`:
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `GET` | `/api/admin/stats` | Revenue, conversion, last 7 days, payments by method, orders paid twice |
+| `GET` | `/api/admin/orders?status=&q=&page=&size=` | Search by reference, name, or email |
+| `GET` | `/api/admin/orders/{id}` | Items, every payment attempt, and its webhooks |
+| `GET` | `/api/admin/webhooks?page=&size=` | Every processed event with the confirmed status and outcome |
+| `POST` | `/api/admin/payments/{id}/sync` | Re-check one payment with its gateway, for a missed webhook |
 
 Errors are returned as [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) problem details (`404`, `400`, `409` for an order that is already paid or expired, `401` for a webhook that fails verification, `502` when the gateway rejects a request).
 
@@ -87,6 +108,8 @@ Errors are returned as [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) proble
 - **Switching methods cancels the old one.** Starting a new payment cancels any pending attempt at the gateway first (best effort), so customers don't end up with two live payment codes.
 - **Expiry is double-checked.** A scheduled job closes payments past their expiry (with a 2-minute grace period) only after confirming with the gateway that they were not paid at the last second. Orders expire after 24 hours by default; each payment after 1 hour.
 - **Concurrency.** Entities use optimistic locking (`@Version`), so a webhook and the expiry job racing on the same payment cannot both win. Requests run on virtual threads.
+- **The server prices every order.** The client sends product IDs and quantities only; names and prices are copied into `order_items`, so later catalogue edits never change a placed order.
+- **Double payments are visible.** If an old method is paid after the customer switched and paid the new one, the order stays paid once and the admin API flags it for a refund.
 - **Gateways sit behind one interface.** `PaymentGateway` has `create`, `fetchStatus`, `cancel`, and `parseWebhook`. Adding another provider means one new class; checkout and webhook handling stay the same.
 
 ## Connecting a real gateway
@@ -112,8 +135,10 @@ This uses the [Core API](https://docs.midtrans.com/reference/charge-transactions
 ### Before going live
 
 - Set `PAYMENTS_SIMULATOR_ENABLED=false`.
+- Set a long random `ADMIN_TOKEN`; without it the admin API accepts the demo token and logs a warning.
+- Set `PAYMENTS_RETURN_URL` to your web app's order page, e.g. `https://shop.example.com/orders/{orderId}`.
 - Use PostgreSQL (`DATABASE_URL`, `DATABASE_USERNAME`, `DATABASE_PASSWORD`). The schema is managed by Flyway.
-- Add authentication to the `/api` endpoints; this starter leaves that to your app.
+- Customer endpoints are open, as in a guest checkout; order IDs are random UUIDs. Add customer accounts if your shop needs them.
 
 ## Tests
 
@@ -123,7 +148,8 @@ This uses the [Core API](https://docs.midtrans.com/reference/charge-transactions
 
 - `PaymentStatusServiceTest`: status rules (paid once, no downgrades, late payments).
 - `XenditGatewayTest`, `MidtransGatewayTest`: request bodies, status mapping, and webhook verification against mocked HTTP.
-- `CheckoutFlowTest`: the full flow over HTTP with the simulator, including duplicate and forged webhooks and switching methods.
+- `CheckoutFlowTest`: the full flow over HTTP with the simulator, including server-side pricing, duplicate and forged webhooks, and switching methods.
+- `AdminApiTest`: token check, search and filters, orders paid twice flagged for refund, and re-checking a payment whose webhook was missed.
 
 ## Stack
 

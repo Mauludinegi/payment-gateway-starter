@@ -67,8 +67,10 @@ public class WebhookService {
 
         try {
             return tx.execute(status -> {
-                events.saveAndFlush(new WebhookEvent(provider, notification.eventKey(), clock.instant()));
+                WebhookEvent event = events.saveAndFlush(
+                        new WebhookEvent(provider, notification.eventKey(), clock.instant(), attempt.getId(), confirmed));
                 PaymentStatusService.Outcome outcome = statuses.apply(attempt.getId(), confirmed);
+                event.recordOutcome(outcome);
                 log.info("{} webhook {}: payment {} -> {} ({})", provider, notification.eventKey(), attempt.getId(), confirmed, outcome);
                 return Result.PROCESSED;
             });

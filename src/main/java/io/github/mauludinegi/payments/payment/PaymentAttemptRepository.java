@@ -4,6 +4,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -28,4 +29,27 @@ public interface PaymentAttemptRepository extends JpaRepository<PaymentAttempt, 
     List<PaymentAttempt> findByOrderIdAndStatus(UUID orderId, PaymentStatus status);
 
     List<PaymentAttempt> findByStatusAndExpiresAtBefore(PaymentStatus status, Instant before);
+
+    List<PaymentAttempt> findByOrderIdOrderByCreatedAtDesc(UUID orderId);
+
+    List<PaymentAttempt> findByOrderIdInOrderByCreatedAtDesc(Collection<UUID> orderIds);
+
+    @Query("select a from PaymentAttempt a join fetch a.order where a.id in :ids")
+    List<PaymentAttempt> findWithOrderByIdIn(Collection<UUID> ids);
+
+    @Query("""
+            select new io.github.mauludinegi.payments.payment.ChannelTotal(a.channel, count(a), coalesce(sum(a.order.amount), 0))
+            from PaymentAttempt a
+            where a.status = io.github.mauludinegi.payments.payment.PaymentStatus.SUCCEEDED
+            group by a.channel
+            """)
+    List<ChannelTotal> succeededByChannel();
+
+    /** Orders paid more than once (e.g. an old VA paid after switching to QRIS); the extra payment needs a refund. */
+    @Query("""
+            select a.order.id from PaymentAttempt a
+            where a.status = io.github.mauludinegi.payments.payment.PaymentStatus.SUCCEEDED
+            group by a.order.id having count(a) > 1
+            """)
+    List<UUID> findOrdersPaidTwice();
 }

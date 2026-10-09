@@ -124,9 +124,29 @@ class CheckoutFlowTest {
     }
 
     @Test
+    void pricesComeFromTheCatalogue() throws Exception {
+        // Unknown fields such as a client-sent amount are ignored; duplicate lines are merged.
+        mvc.perform(post("/api/orders").contentType(MediaType.APPLICATION_JSON).content("""
+                        {"items":[{"productId":"ebook-api","quantity":1},{"productId":"course-nuxt","quantity":2},{"productId":"ebook-api","quantity":1}],
+                         "customerName":"Budi","amount":1000}
+                        """))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.amount").value(2 * 79_000 + 2 * 199_000))
+                .andExpect(jsonPath("$.description").value("Clean API Design + 1 more"))
+                .andExpect(jsonPath("$.items.length()").value(2))
+                .andExpect(jsonPath("$.items[0].quantity").value(2));
+    }
+
+    @Test
     void validatesInput() throws Exception {
         mvc.perform(post("/api/orders").contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"description\":\"\",\"amount\":10,\"customerName\":\"Budi\"}"))
+                        .content("{\"items\":[],\"customerName\":\"Budi\"}"))
+                .andExpect(status().isBadRequest());
+        mvc.perform(post("/api/orders").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"items\":[{\"productId\":\"nope\",\"quantity\":1}],\"customerName\":\"Budi\"}"))
+                .andExpect(status().isBadRequest());
+        mvc.perform(post("/api/orders").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"items\":[{\"productId\":\"ebook-api\",\"quantity\":11}],\"customerName\":\"Budi\"}"))
                 .andExpect(status().isBadRequest());
         mvc.perform(get("/api/orders/{id}", UUID.randomUUID()))
                 .andExpect(status().isNotFound());
@@ -134,7 +154,7 @@ class CheckoutFlowTest {
 
     private String createOrder() throws Exception {
         String response = mvc.perform(post("/api/orders").contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"description\":\"Premium plan\",\"amount\":150000,\"customerName\":\"Budi\"}"))
+                        .content("{\"items\":[{\"productId\":\"course-k8s\",\"quantity\":1}],\"customerName\":\"Budi\"}"))
                 .andExpect(status().isCreated())
                 .andReturn().getResponse().getContentAsString();
         return json.readTree(response).path("id").asString();

@@ -29,6 +29,8 @@ public class Order {
     @Column(nullable = false)
     private String customerName;
 
+    private String customerEmail;
+
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
     private OrderStatus status;
@@ -47,12 +49,14 @@ public class Order {
     protected Order() {
     }
 
-    public Order(String reference, String description, long amount, String customerName, Instant now, Instant expiresAt) {
+    public Order(String reference, String description, long amount, String customerName, String customerEmail,
+                 Instant now, Instant expiresAt) {
         this.id = UUID.randomUUID();
         this.reference = reference;
         this.description = description;
         this.amount = amount;
         this.customerName = customerName;
+        this.customerEmail = customerEmail;
         this.status = OrderStatus.PENDING_PAYMENT;
         this.createdAt = now;
         this.expiresAt = expiresAt;
@@ -83,6 +87,7 @@ public class Order {
     public String getDescription() { return description; }
     public long getAmount() { return amount; }
     public String getCustomerName() { return customerName; }
+    public String getCustomerEmail() { return customerEmail; }
     public OrderStatus getStatus() { return status; }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getExpiresAt() { return expiresAt; }

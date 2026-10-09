@@ -8,6 +8,7 @@ import java.util.UUID;
 /** Everything a gateway needs to create one payment. The attempt id doubles as the gateway reference id. */
 public record PaymentRequest(
         UUID attemptId,
+        UUID orderId,
         String orderReference,
         String description,
         long amount,

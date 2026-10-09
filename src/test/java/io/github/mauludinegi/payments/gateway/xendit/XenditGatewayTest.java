@@ -34,6 +34,7 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 class XenditGatewayTest {
 
     private static final String TOKEN = "callback-token-123";
+    private static final UUID ORDER_ID = UUID.fromString("00000000-0000-0000-0000-0000000000aa");
 
     private MockRestServiceServer server;
     private XenditGateway gateway;
@@ -42,7 +43,7 @@ class XenditGatewayTest {
     void setUp() {
         RestClient.Builder builder = RestClient.builder();
         server = MockRestServiceServer.bindTo(builder).build();
-        PaymentsProperties properties = new PaymentsProperties(null, null, null, null, "https://shop.test/return",
+        PaymentsProperties properties = new PaymentsProperties(null, null, null, null, "https://shop.test/orders/{orderId}",
                 new PaymentsProperties.Xendit("xnd_development_key", TOKEN, "https://api.xendit.test"), null, null);
         gateway = new XenditGateway(builder, properties, JsonMapper.builder().build());
     }
@@ -78,7 +79,7 @@ class XenditGatewayTest {
     void ewalletSendsReturnUrlsAndRedirectsCustomer() {
         server.expect(requestTo("https://api.xendit.test/v3/payment_requests"))
                 .andExpect(jsonPath("$.channel_code").value("DANA"))
-                .andExpect(jsonPath("$.channel_properties.success_return_url").value("https://shop.test/return"))
+                .andExpect(jsonPath("$.channel_properties.success_return_url").value("https://shop.test/orders/" + ORDER_ID))
                 .andRespond(withSuccess("""
                         {"payment_request_id":"pr-2","status":"REQUIRES_ACTION",
                          "actions":[{"type":"REDIRECT_CUSTOMER","descriptor":"WEB_URL","value":"https://dana.test/pay"}]}
@@ -142,7 +143,7 @@ class XenditGatewayTest {
     }
 
     private static PaymentRequest request(UUID attemptId, Channel channel, String mobile) {
-        return new PaymentRequest(attemptId, "ORD-1", "Premium plan", 150_000, "Budi", mobile, channel,
+        return new PaymentRequest(attemptId, ORDER_ID, "ORD-1", "Premium plan", 150_000, "Budi", mobile, channel,
                 Instant.parse("2026-10-09T11:00:00Z"));
     }
 }

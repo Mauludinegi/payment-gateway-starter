@@ -33,6 +33,7 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 class MidtransGatewayTest {
 
     private static final String SERVER_KEY = "SB-Mid-server-test";
+    private static final UUID ORDER_ID = UUID.fromString("00000000-0000-0000-0000-0000000000aa");
 
     private MockRestServiceServer server;
     private MidtransGateway gateway;
@@ -127,7 +128,7 @@ class MidtransGatewayTest {
     }
 
     private static PaymentRequest request(UUID attemptId, Channel channel) {
-        return new PaymentRequest(attemptId, "ORD-1", "Premium plan", 150_000, "Budi", null, channel,
+        return new PaymentRequest(attemptId, ORDER_ID, "ORD-1", "Premium plan", 150_000, "Budi", null, channel,
                 Instant.now().plus(1, ChronoUnit.HOURS));
     }
 }

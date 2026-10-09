@@ -48,13 +48,13 @@ public class MidtransGateway implements PaymentGateway {
     private static final DateTimeFormatter MIDTRANS_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     private final PaymentsProperties.Midtrans config;
-    private final String returnUrl;
+    private final PaymentsProperties properties;
     private final RestClient http;
     private final JsonMapper json;
 
     public MidtransGateway(RestClient.Builder builder, PaymentsProperties properties, JsonMapper json) {
         this.config = properties.midtrans();
-        this.returnUrl = properties.returnUrl();
+        this.properties = properties;
         this.json = json;
         String basic = Base64.getEncoder().encodeToString(((config.serverKey() == null ? "" : config.serverKey()) + ":").getBytes(StandardCharsets.UTF_8));
         this.http = builder.clone()
@@ -98,11 +98,11 @@ public class MidtransGateway implements PaymentGateway {
             case QRIS -> body.put("payment_type", "qris");
             case GOPAY -> {
                 body.put("payment_type", "gopay");
-                body.put("gopay", Map.of("enable_callback", true, "callback_url", returnUrl));
+                body.put("gopay", Map.of("enable_callback", true, "callback_url", returnUrlFor(request)));
             }
             case SHOPEEPAY -> {
                 body.put("payment_type", "shopeepay");
-                body.put("shopeepay", Map.of("callback_url", returnUrl));
+                body.put("shopeepay", Map.of("callback_url", returnUrlFor(request)));
             }
             case INDOMARET, ALFAMART -> {
                 body.put("payment_type", "cstore");
@@ -240,5 +240,9 @@ public class MidtransGateway implements PaymentGateway {
         } catch (IllegalArgumentException e) {
             return null;
         }
+    }
+
+    private String returnUrlFor(PaymentRequest request) {
+        return properties.returnUrlFor(request.orderId());
     }
 }
