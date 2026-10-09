@@ -1,5 +1,6 @@
 package io.github.mauludinegi.payments;
 
+import io.github.mauludinegi.payments.auth.AuthService;
 import io.github.mauludinegi.payments.gateway.simulator.SimulatorGateway;
 import io.github.mauludinegi.payments.payment.PaymentStatus;
 import org.junit.jupiter.api.BeforeEach;
@@ -31,11 +32,17 @@ class AdminApiTest {
     @Autowired
     SimulatorGateway simulator;
 
+    @Autowired
+    AuthService auth;
+
     MockMvc mvc;
 
     @BeforeEach
     void setUp() {
-        mvc = MockMvcBuilders.webAppContextSetup(context).build();
+        String session = auth.signInForDevelopment("Budi", "budi@example.com").session().token();
+        mvc = MockMvcBuilders.webAppContextSetup(context)
+                .defaultRequest(get("/").header(HttpHeaders.AUTHORIZATION, "Bearer " + session))
+                .build();
     }
 
     @Test

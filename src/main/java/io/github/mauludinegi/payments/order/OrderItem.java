@@ -45,6 +45,7 @@ public class OrderItem {
         return unitPrice * quantity;
     }
 
+    public UUID getOrderId() { return orderId; }
     public String getProductId() { return productId; }
     public String getProductName() { return productName; }
     public long getUnitPrice() { return unitPrice; }

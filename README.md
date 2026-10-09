@@ -2,7 +2,9 @@
 
 A Spring Boot backend for taking Indonesian payments (virtual accounts, QRIS, e-wallets, and retail outlets) through **Xendit** or **Midtrans**. It handles the parts that usually go wrong in production: duplicate webhooks, forged webhooks, late payments, customers who switch payment methods, and payments that expire.
 
-It runs with zero setup: a built-in **simulator** gateway stands in for the real ones, so you can click through the whole checkout before you have API keys.
+Customers sign in with **Google** (Firebase Authentication); sessions live in **Redis** (Upstash), and checkout, the payment page, and order history require a session.
+
+It runs with zero setup: a built-in **simulator** gateway stands in for the real ones and a dev sign-in stands in for Google, so you can click through the whole checkout before you have any keys.
 
 The storefront and admin dashboard live in a separate repo: **[payment-gateway-starter-web](https://github.com/Mauludinegi/payment-gateway-starter-web)** (Nuxt 4 + Nuxt UI).
 
@@ -24,19 +26,38 @@ Requires Java 21+.
 The API is on http://localhost:8080. For the store and admin UI, run the [web app](https://github.com/Mauludinegi/payment-gateway-starter-web) next to it, or try the API directly:
 
 ```bash
-ORDER=$(curl -s localhost:8080/api/orders -H 'content-type: application/json' \
-  -d '{"items":[{"productId":"course-k8s","quantity":1}],"customerName":"Budi"}' | jq -r .id)
-curl -s localhost:8080/api/orders/$ORDER/payments -H 'content-type: application/json' -d '{"channel":"BCA_VA"}'
+AUTH="authorization: Bearer $(curl -s localhost:8080/api/auth/dev -H 'content-type: application/json' \
+  -d '{"name":"Budi","email":"budi@example.com"}' | jq -r .token)"
+ORDER=$(curl -s localhost:8080/api/orders -H "$AUTH" -H 'content-type: application/json' \
+  -d '{"items":[{"productId":"course-k8s","quantity":1}]}' | jq -r .id)
+curl -s localhost:8080/api/orders/$ORDER/payments -H "$AUTH" -H 'content-type: application/json' -d '{"channel":"BCA_VA"}'
 curl -s -X POST localhost:8080/api/simulator/orders/$ORDER/pay      # the simulator sends a signed webhook
-curl -s localhost:8080/api/orders/$ORDER | jq .status              # "PAID"
+curl -s localhost:8080/api/orders/$ORDER -H "$AUTH" | jq .status   # "PAID"
 ```
 
-With PostgreSQL instead of the in-memory H2 database:
+With your own services (Postgres such as Supabase, Upstash Redis, Firebase), put them in `.env` and run with the `local` profile, which reads that file:
 
 ```bash
-cp .env.example .env   # optional: add gateway keys
+cp .env.example .env   # fill in what you use
+./mvnw spring-boot:run -Dspring-boot.run.profiles=local
+```
+
+Or run PostgreSQL in Docker:
+
+```bash
 docker compose up --build
 ```
+
+### Accounts and sessions
+
+1. The web app signs the customer in with Google through Firebase and sends the Firebase ID token to `POST /api/auth/google`.
+2. The backend verifies the token against Google's public keys (RS256, audience and issuer bound to `FIREBASE_PROJECT_ID`, not expired). No service account is needed.
+3. It creates or updates the user and returns an opaque session token. Redis stores only the token's SHA-256 with a TTL (`AUTH_SESSION_TTL`, 7 days by default), so a Redis dump cannot be replayed as a login.
+4. Customer endpoints take `Authorization: Bearer <session>`. Customers see only their own orders; someone else's order returns `404`.
+
+Without `UPSTASH_REDIS_REST_URL`, sessions are kept in memory (single instance, lost on restart). `POST /api/auth/dev` signs in with just a name and email for local runs; it is on by default and must be turned off with `AUTH_DEV_LOGIN_ENABLED=false` in production.
+
+**Supabase:** use the session pooler (`aws-0-<region>.pooler.supabase.com:5432`, user `postgres.<project-ref>`), because the direct `db.<ref>.supabase.co` host is IPv6-only. Set `DATABASE_SCHEMA=payments` so the tables are not in `public`, which Supabase exposes through its Data API.
 
 ## What it does
 
@@ -82,11 +103,19 @@ payments:
 | --- | --- | --- |
 | `GET` | `/api/products` | Active products from the catalogue |
 | `GET` | `/api/channels` | Channels whose gateway is configured |
-| `POST` | `/api/orders` | `{items: [{productId, quantity}], customerName, customerEmail?}`; prices come from the catalogue, never the client |
-| `GET` | `/api/orders/{id}` | Order with items, its latest payment, and instructions |
-| `POST` | `/api/orders/{id}/payments` | `{channel, mobileNumber?}`; `mobileNumber` (`+62…`) is required for OVO |
+| `GET` | `/api/auth/options` | Which sign-in methods are enabled |
+| `POST` | `/api/auth/google` | `{idToken}` from Firebase; returns `{token, expiresAt, user}` |
+| `POST` | `/api/auth/dev` | `{name, email}`; local runs only |
+| `GET` | `/api/auth/me` | Signed-in user (session) |
+| `DELETE` | `/api/auth/session` | Sign out; revokes the session |
+| `POST` | `/api/orders` | `{items: [{productId, quantity}], customerName?}` (session); prices come from the catalogue, the receipt email from the account |
+| `GET` | `/api/orders/{id}` | Order with items, its latest payment, and instructions (session) |
+| `POST` | `/api/orders/{id}/payments` | `{channel, mobileNumber?}` (session); `mobileNumber` (`+62…`) is required for OVO |
+| `GET` | `/api/me/orders` | The customer's 50 latest orders (session) |
 | `POST` | `/webhooks/{xendit\|midtrans}` | Gateway notifications |
 | `POST` | `/api/simulator/orders/{id}/{pay\|fail\|expire}` | Simulator only; disable in production |
+
+(session) needs `Authorization: Bearer <session token>`.
 
 Admin endpoints need `Authorization: Bearer $ADMIN_TOKEN`:
 
@@ -98,7 +127,7 @@ Admin endpoints need `Authorization: Bearer $ADMIN_TOKEN`:
 | `GET` | `/api/admin/webhooks?page=&size=` | Every processed event with the confirmed status and outcome |
 | `POST` | `/api/admin/payments/{id}/sync` | Re-check one payment with its gateway, for a missed webhook |
 
-Errors are returned as [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) problem details (`404`, `400`, `409` for an order that is already paid or expired, `401` for a webhook that fails verification, `502` when the gateway rejects a request).
+Errors are returned as [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) problem details (`404`, `400`, `409` for an order that is already paid or expired, `401` for a missing session or a webhook that fails verification, `502` when the gateway rejects a request).
 
 ## Design decisions
 
@@ -137,8 +166,9 @@ This uses the [Core API](https://docs.midtrans.com/reference/charge-transactions
 - Set `PAYMENTS_SIMULATOR_ENABLED=false`.
 - Set a long random `ADMIN_TOKEN`; without it the admin API accepts the demo token and logs a warning.
 - Set `PAYMENTS_RETURN_URL` to your web app's order page, e.g. `https://shop.example.com/orders/{orderId}`.
-- Use PostgreSQL (`DATABASE_URL`, `DATABASE_USERNAME`, `DATABASE_PASSWORD`). The schema is managed by Flyway.
-- Customer endpoints are open, as in a guest checkout; order IDs are random UUIDs. Add customer accounts if your shop needs them.
+- Set `AUTH_DEV_LOGIN_ENABLED=false`, `FIREBASE_PROJECT_ID`, and the Upstash variables so sessions survive restarts and are shared between instances.
+- In the Firebase console, enable Google under Authentication > Sign-in method and add your web domain to the authorised domains.
+- Use PostgreSQL (`DATABASE_URL`, `DATABASE_USERNAME`, `DATABASE_PASSWORD`, optionally `DATABASE_SCHEMA`). The schema is managed by Flyway.
 
 ## Tests
 
@@ -150,10 +180,13 @@ This uses the [Core API](https://docs.midtrans.com/reference/charge-transactions
 - `XenditGatewayTest`, `MidtransGatewayTest`: request bodies, status mapping, and webhook verification against mocked HTTP.
 - `CheckoutFlowTest`: the full flow over HTTP with the simulator, including server-side pricing, duplicate and forged webhooks, and switching methods.
 - `AdminApiTest`: token check, search and filters, orders paid twice flagged for refund, and re-checking a payment whose webhook was missed.
+- `AuthApiTest`: endpoints that need a session, customers seeing only their own orders, repeat sign-ins, and sign-out revoking the session.
+- `FirebaseTokenVerifierTest`: Google ID tokens with a wrong project, an expired time, or a foreign signing key are rejected.
+- `UpstashSessionStoreTest`: the Redis REST commands and error handling.
 
 ## Stack
 
-Java 21, Spring Boot 4, Spring Data JPA, Flyway, PostgreSQL (H2 for local runs and tests), Docker, GitHub Actions.
+Java 21, Spring Boot 4, Spring Data JPA, Flyway, PostgreSQL (H2 for local runs and tests), Redis (Upstash REST), Firebase Authentication (Nimbus JOSE + JWT), Docker, GitHub Actions.
 
 ## License
 

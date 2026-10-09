@@ -1,5 +1,6 @@
 package io.github.mauludinegi.payments.admin;
 
+import io.github.mauludinegi.payments.auth.UnauthorizedException;
 import io.github.mauludinegi.payments.config.AdminProperties;
 import io.github.mauludinegi.payments.gateway.WebhookSecrets;
 import jakarta.servlet.http.HttpServletRequest;
@@ -40,11 +41,5 @@ public class AdminAuth implements WebMvcConfigurer, HandlerInterceptor {
             throw new UnauthorizedException("Admin token missing or invalid");
         }
         return true;
-    }
-
-    public static class UnauthorizedException extends RuntimeException {
-        public UnauthorizedException(String message) {
-            super(message);
-        }
     }
 }

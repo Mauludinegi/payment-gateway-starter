@@ -1,5 +1,8 @@
 package io.github.mauludinegi.payments.api;
 
+import io.github.mauludinegi.payments.auth.AuthService;
+import io.github.mauludinegi.payments.auth.User;
+import io.github.mauludinegi.payments.auth.UserAuth;
 import io.github.mauludinegi.payments.catalog.Product;
 import io.github.mauludinegi.payments.catalog.ProductRepository;
 import io.github.mauludinegi.payments.gateway.GatewayRegistry;
@@ -9,7 +12,6 @@ import io.github.mauludinegi.payments.payment.Channel;
 import io.github.mauludinegi.payments.payment.PaymentAttempt;
 import io.github.mauludinegi.payments.service.CheckoutService;
 import jakarta.validation.Valid;
-import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
@@ -21,6 +23,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestAttribute;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
@@ -37,17 +40,19 @@ public class OrderController {
     private final CheckoutService checkout;
     private final GatewayRegistry gateways;
     private final ProductRepository products;
+    private final AuthService auth;
 
-    public OrderController(CheckoutService checkout, GatewayRegistry gateways, ProductRepository products) {
+    public OrderController(CheckoutService checkout, GatewayRegistry gateways, ProductRepository products, AuthService auth) {
         this.checkout = checkout;
         this.gateways = gateways;
         this.products = products;
+        this.auth = auth;
     }
 
+    /** The receipt goes to the account's email; the name defaults to the account's but can be changed. */
     public record CreateOrder(
             @NotEmpty @Size(max = 20) List<@Valid Line> items,
-            @NotBlank @Size(max = 100) String customerName,
-            @Email @Size(max = 254) String customerEmail) {
+            @Size(max = 100) String customerName) {
 
         public record Line(@NotBlank String productId, @Min(1) @Max(10) int quantity) {
         }
@@ -82,24 +87,31 @@ public class OrderController {
 
     @PostMapping("/orders")
     @ResponseStatus(HttpStatus.CREATED)
-    public OrderResponse create(@Valid @RequestBody CreateOrder body) {
+    public OrderResponse create(@RequestAttribute(UserAuth.USER_ID) UUID userId, @Valid @RequestBody CreateOrder body) {
+        User user = auth.user(userId);
         List<CheckoutService.CartLine> lines = body.items().stream()
                 .map(l -> new CheckoutService.CartLine(l.productId(), l.quantity()))
                 .toList();
-        String email = body.customerEmail() == null || body.customerEmail().isBlank() ? null : body.customerEmail().trim();
-        return OrderResponse.of(checkout.createOrder(lines, body.customerName().trim(), email));
+        String name = body.customerName() == null || body.customerName().isBlank() ? user.getName() : body.customerName().trim();
+        return OrderResponse.of(checkout.createOrder(userId, lines, name, user.getEmail()));
     }
 
     /** Polled by the payment page every few seconds. */
     @GetMapping("/orders/{id}")
-    public OrderResponse get(@PathVariable UUID id) {
-        return OrderResponse.of(checkout.view(id));
+    public OrderResponse get(@RequestAttribute(UserAuth.USER_ID) UUID userId, @PathVariable UUID id) {
+        return OrderResponse.of(checkout.viewOwned(id, userId));
     }
 
     @PostMapping("/orders/{id}/payments")
     @ResponseStatus(HttpStatus.CREATED)
-    public OrderResponse pay(@PathVariable UUID id, @Valid @RequestBody StartPayment body) {
-        return OrderResponse.of(checkout.startPayment(id, body.channel(), body.mobileNumber()));
+    public OrderResponse pay(@RequestAttribute(UserAuth.USER_ID) UUID userId, @PathVariable UUID id,
+                             @Valid @RequestBody StartPayment body) {
+        return OrderResponse.of(checkout.startPayment(id, userId, body.channel(), body.mobileNumber()));
+    }
+
+    @GetMapping("/me/orders")
+    public List<OrderResponse> myOrders(@RequestAttribute(UserAuth.USER_ID) UUID userId) {
+        return checkout.ordersOf(userId).stream().map(OrderResponse::of).toList();
     }
 
     public record OrderResponse(

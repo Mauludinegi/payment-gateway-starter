@@ -1,5 +1,6 @@
 package io.github.mauludinegi.payments;
 
+import io.github.mauludinegi.payments.auth.AuthService;
 import io.github.mauludinegi.payments.gateway.simulator.SimulatorGateway;
 import io.github.mauludinegi.payments.payment.PaymentAttemptRepository;
 import io.github.mauludinegi.payments.payment.PaymentStatus;
@@ -7,6 +8,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -35,11 +37,17 @@ class CheckoutFlowTest {
     @Autowired
     PaymentAttemptRepository attempts;
 
+    @Autowired
+    AuthService auth;
+
     MockMvc mvc;
 
     @BeforeEach
     void setUp() {
-        mvc = MockMvcBuilders.webAppContextSetup(context).build();
+        String session = auth.signInForDevelopment("Budi", "budi@example.com").session().token();
+        mvc = MockMvcBuilders.webAppContextSetup(context)
+                .defaultRequest(get("/").header(HttpHeaders.AUTHORIZATION, "Bearer " + session))
+                .build();
     }
 
     @Test

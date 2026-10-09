@@ -71,7 +71,7 @@ public class CheckoutService {
 
     /** Prices always come from the catalogue; the client only says what and how many. */
     @Transactional
-    public OrderView createOrder(List<CartLine> lines, String customerName, String customerEmail) {
+    public OrderView createOrder(UUID userId, List<CartLine> lines, String customerName, String customerEmail) {
         Map<String, Integer> quantities = new LinkedHashMap<>();
         for (CartLine line : lines) {
             quantities.merge(line.productId(), line.quantity(), Integer::sum);
@@ -98,7 +98,7 @@ public class CheckoutService {
         Instant now = clock.instant();
         String first = found.get(quantities.keySet().iterator().next()).getName();
         String description = quantities.size() == 1 ? first : first + " + " + (quantities.size() - 1) + " more";
-        Order order = orders.save(new Order(newReference(now), description, amount, customerName, customerEmail,
+        Order order = orders.save(new Order(userId, newReference(now), description, amount, customerName, customerEmail,
                 now, now.plus(properties.orderTtl())));
         List<OrderItem> saved = items.saveAll(quantities.entrySet().stream()
                 .map(e -> {
@@ -114,8 +114,10 @@ public class CheckoutService {
      * cannot pay twice; if a cancelled one is paid anyway, the webhook still marks the order paid.
      * No transaction is held open while the gateway is called.
      */
-    public OrderView startPayment(UUID orderId, Channel channel, String mobileNumber) {
-        Order order = orders.findById(orderId).orElseThrow(() -> new NotFoundException("Order " + orderId + " not found"));
+    public OrderView startPayment(UUID orderId, UUID userId, Channel channel, String mobileNumber) {
+        Order order = orders.findById(orderId)
+                .filter(o -> userId.equals(o.getUserId()))
+                .orElseThrow(() -> new NotFoundException("Order " + orderId + " not found"));
         if (!order.isPayable()) {
             throw new IllegalStateException("Order " + order.getReference() + " is " + order.getStatus());
         }
@@ -145,6 +147,30 @@ public class CheckoutService {
                 .or(() -> orders.findById(orderId))
                 .orElseThrow(() -> new NotFoundException("Order " + orderId + " not found"));
         return new OrderView(order, latest.orElse(null), items.findByOrderIdOrderById(orderId));
+    }
+
+    /** Someone else's order looks exactly like a missing one. */
+    public OrderView viewOwned(UUID orderId, UUID userId) {
+        OrderView view = view(orderId);
+        if (!userId.equals(view.order().getUserId())) {
+            throw new NotFoundException("Order " + orderId + " not found");
+        }
+        return view;
+    }
+
+    /** The customer's latest orders, newest first, each with its latest payment. */
+    public List<OrderView> ordersOf(UUID userId) {
+        List<Order> mine = orders.findTop50ByUserIdOrderByCreatedAtDesc(userId);
+        List<UUID> ids = mine.stream().map(Order::getId).toList();
+        Map<UUID, PaymentAttempt> latest = new LinkedHashMap<>();
+        for (PaymentAttempt a : attempts.findByOrderIdInOrderByCreatedAtDesc(ids)) {
+            latest.putIfAbsent(a.getOrder().getId(), a);
+        }
+        Map<UUID, List<OrderItem>> itemsByOrder = items.findByOrderIdInOrderById(ids).stream()
+                .collect(Collectors.groupingBy(OrderItem::getOrderId));
+        return mine.stream()
+                .map(o -> new OrderView(o, latest.get(o.getId()), itemsByOrder.getOrDefault(o.getId(), List.of())))
+                .toList();
     }
 
     public record OrderView(Order order, PaymentAttempt payment, List<OrderItem> items) {

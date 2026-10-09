@@ -9,10 +9,26 @@ spring:
     url: ${DATABASE_URL:jdbc:h2:mem:payments;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH}
     username: ${DATABASE_USERNAME:sa}
     password: ${DATABASE_PASSWORD:}
+  flyway:
+    # Supabase exposes the public schema through its Data API, so keep app tables in their own schema there.
+    default-schema: ${DATABASE_SCHEMA:public}
   jpa:
     open-in-view: false
     hibernate:
       ddl-auto: validate
+    properties:
+      hibernate:
+        default_schema: ${DATABASE_SCHEMA:public}
+
+auth:
+  # Firebase project for Google sign-in; ID tokens from other projects are rejected.
+  firebase-project-id: ${FIREBASE_PROJECT_ID:}
+  session-ttl: ${AUTH_SESSION_TTL:P7D}
+  # Name-and-email sign-in for local runs without Firebase. Turn off in production.
+  dev-login-enabled: ${AUTH_DEV_LOGIN_ENABLED:true}
+  upstash:
+    rest-url: ${UPSTASH_REDIS_REST_URL:}
+    rest-token: ${UPSTASH_REDIS_REST_TOKEN:}
 
 admin:
   # Bearer token for /api/admin. The default only exists so the demo runs; always set ADMIN_TOKEN when deploying.
@@ -46,3 +62,11 @@ payments:
   simulator:
     enabled: ${PAYMENTS_SIMULATOR_ENABLED:true}
     secret: ${PAYMENTS_SIMULATOR_SECRET:local-simulator-secret}
+
+---
+# Local runs (./mvnw spring-boot:run -Dspring-boot.run.profiles=local) also read .env; real environment variables win.
+spring:
+  config:
+    activate:
+      on-profile: local
+    import: optional:file:.env[.properties]

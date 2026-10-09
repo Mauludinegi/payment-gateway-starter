@@ -27,4 +27,6 @@ public interface OrderRepository extends JpaRepository<Order, UUID>, JpaSpecific
     List<StatusTotal> totalsByStatus();
 
     List<Order> findByPaidAtGreaterThanEqual(Instant since);
+
+    List<Order> findTop50ByUserIdOrderByCreatedAtDesc(UUID userId);
 }
