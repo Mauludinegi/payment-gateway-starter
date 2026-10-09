@@ -8,6 +8,7 @@ import io.github.mauludinegi.payments.payment.PaymentAttemptRepository;
 import io.github.mauludinegi.payments.payment.PaymentStatus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -15,6 +16,7 @@ import org.springframework.stereotype.Component;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Not every gateway sends an expiry webhook (Xendit v3 does not), so pending payments past their
@@ -32,22 +34,47 @@ public class ExpiryJob {
     private final PaymentStatusService statuses;
     private final Clock clock;
 
+    private final Duration interval;
+    private final AtomicBoolean running = new AtomicBoolean();
+    private volatile Instant lastRun = Instant.EPOCH;
+
     public ExpiryJob(PaymentAttemptRepository attempts, OrderRepository orders, GatewayRegistry gateways,
-                     PaymentStatusService statuses, Clock clock) {
+                     PaymentStatusService statuses, Clock clock,
+                     @Value("${payments.expiry-check-interval:PT1M}") Duration interval) {
         this.attempts = attempts;
         this.orders = orders;
         this.gateways = gateways;
         this.statuses = statuses;
         this.clock = clock;
+        this.interval = interval;
     }
 
     @Scheduled(fixedDelayString = "${payments.expiry-check-interval:PT1M}")
     public void run() {
-        Instant now = clock.instant();
-        for (PaymentAttempt attempt : attempts.findByStatusAndExpiresAtBefore(PaymentStatus.PENDING, now.minus(GRACE))) {
-            closeAttempt(attempt);
+        if (!running.compareAndSet(false, true)) {
+            return;
         }
-        expireOrders(now);
+        try {
+            Instant now = clock.instant();
+            lastRun = now;
+            for (PaymentAttempt attempt : attempts.findByStatusAndExpiresAtBefore(PaymentStatus.PENDING, now.minus(GRACE))) {
+                closeAttempt(attempt);
+            }
+            expireOrders(now);
+        } finally {
+            running.set(false);
+        }
+    }
+
+    /**
+     * Starts a run in the background when the last one is older than the interval. Hosts that pause the app
+     * between requests (Vercel) never fire the schedule, so incoming requests start the job instead.
+     */
+    public void runIfDue() {
+        if (running.get() || clock.instant().isBefore(lastRun.plus(interval))) {
+            return;
+        }
+        Thread.ofVirtual().name("expiry-job").start(this::run);
     }
 
     private void closeAttempt(PaymentAttempt attempt) {

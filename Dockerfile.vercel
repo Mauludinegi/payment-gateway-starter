@@ -1,0 +1,25 @@
+FROM eclipse-temurin:21-jdk AS build
+WORKDIR /src
+COPY .mvn .mvn
+COPY mvnw pom.xml ./
+RUN ./mvnw -B -q dependency:go-offline
+COPY src src
+RUN ./mvnw -B -q package -DskipTests && cp target/*.jar app.jar
+
+FROM eclipse-temurin:21-jre-alpine
+WORKDIR /app
+RUN adduser --system --uid 10001 app
+COPY --from=build /src/app.jar app.jar
+# Vercel starts an instance per burst of traffic, so startup time is user-facing. A class data sharing archive,
+# recorded by starting the app once here (in-memory H2, no external services), cuts JVM startup noticeably.
+RUN java -Djarmode=tools -jar app.jar extract --destination extracted \
+    && java -XX:ArchiveClassesAtExit=extracted/app.jsa -Dspring.context.exit=onRefresh -jar extracted/app.jar \
+    && chown -R app extracted
+USER app
+# Safe defaults for a public deployment; project environment variables override them.
+ENV AUTH_DEV_LOGIN_ENABLED=false \
+    PAYMENTS_SIMULATOR_ENABLED=false \
+    PAYMENTS_EXPIRY_ON_REQUEST=true \
+    DATABASE_POOL_SIZE=3
+EXPOSE 8080
+ENTRYPOINT ["java", "-XX:MaxRAMPercentage=75", "-XX:SharedArchiveFile=extracted/app.jsa", "-jar", "extracted/app.jar"]

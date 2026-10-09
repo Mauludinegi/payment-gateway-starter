@@ -1,3 +1,6 @@
+server:
+  port: ${PORT:8080}
+
 spring:
   application:
     name: payment-gateway-starter
@@ -9,6 +12,9 @@ spring:
     url: ${DATABASE_URL:jdbc:h2:mem:payments;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH}
     username: ${DATABASE_USERNAME:sa}
     password: ${DATABASE_PASSWORD:}
+    hikari:
+      # Per app instance. Keep it small where many instances share one database (Vercel + Supabase pooler).
+      maximum-pool-size: ${DATABASE_POOL_SIZE:10}
   flyway:
     default-schema: ${DATABASE_SCHEMA:public}
     # {vendor} adds the PostgreSQL-only callback that turns on row level security (see afterMigrate.sql).
@@ -72,6 +78,10 @@ payments:
   # Where e-wallet apps send the customer back; {orderId} is replaced with the order id.
   return-url: "${PAYMENTS_RETURN_URL:http://localhost:3000/orders/{orderId}}"
   expiry-check-interval: PT1M
+  # Hosts that pause the app between requests (Vercel) never fire the schedule: let requests start the job,
+  # and/or call GET /internal/expiry with "Authorization: Bearer <cron-secret>" from a cron job.
+  expiry-on-request: ${PAYMENTS_EXPIRY_ON_REQUEST:false}
+  cron-secret: ${CRON_SECRET:}
   xendit:
     secret-key: ${XENDIT_SECRET_KEY:}
     callback-token: ${XENDIT_CALLBACK_TOKEN:}
