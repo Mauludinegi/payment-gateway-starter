@@ -123,6 +123,8 @@ Checkout only offers channels whose gateway has keys and supports them, and a ty
 
 ### API
 
+Interactive docs are at `/swagger-ui.html` (OpenAPI JSON at `/v3/api-docs`). For signed-in endpoints, click Authorize and paste the session token.
+
 | Method | Path | Notes |
 | --- | --- | --- |
 | `GET` | `/api/products` | Active products with `stock` (null = unlimited), `imageUrl`, `rating`, and `reviewCount` (cached) |

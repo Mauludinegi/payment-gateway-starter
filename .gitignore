@@ -13,4 +13,4 @@ data/
 firebase-service-account.json
 *-firebase-adminsdk-*.json
 .vercel
-.env*
+.env.local
