@@ -116,10 +116,10 @@ Or with environment variables, e.g. Midtrans for everything except the channels 
 
 ```bash
 PAYMENTS_DEFAULT_PROVIDER=MIDTRANS
-PAYMENTS_ROUTING=DANA:XENDIT,OVO:XENDIT,LINKAJA:XENDIT,BSI_VA:XENDIT,BSS_VA:XENDIT
+PAYMENTS_ROUTES=DANA:XENDIT,OVO:XENDIT,LINKAJA:XENDIT,BSI_VA:XENDIT,BSS_VA:XENDIT
 ```
 
-Checkout only offers channels whose gateway has keys and supports them, and a typo in `PAYMENTS_ROUTING` stops the app at startup. Some channels, such as Bank Sahabat Sampoerna, must also be activated in the gateway's dashboard first.
+Checkout only offers channels whose gateway has keys and supports them, and a typo in `PAYMENTS_ROUTES` stops the app at startup. Some channels, such as Bank Sahabat Sampoerna, must also be activated in the gateway's dashboard first.
 
 ### API
 
@@ -242,7 +242,7 @@ In the project's environment variables, set `PORT=8080` (Vercel sends traffic to
 - `ProductAdminApiTest`: creating and editing products, stale edits refused, image uploads checked by content.
 - `CatalogServiceTest`: the cache is filled once, cleared after changes, and skipped when Redis fails.
 - `SupabaseImageStoreTest`: Storage requests, keys, and bucket creation against mocked HTTP.
-- `PaymentsPropertiesTest`: per-channel routing from `PAYMENTS_ROUTING`.
+- `PaymentsPropertiesTest`: per-channel routing from `PAYMENTS_ROUTES`, including from a real environment variable.
 
 ## Stack
 

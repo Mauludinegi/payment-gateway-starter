@@ -66,8 +66,9 @@ management:
 payments:
   # Gateway for channels not listed under routing: SIMULATOR, XENDIT, or MIDTRANS.
   default-provider: ${PAYMENTS_DEFAULT_PROVIDER:SIMULATOR}
-  # Per-channel gateway as one variable, e.g. PAYMENTS_ROUTING=DANA:XENDIT,BSI_VA:XENDIT,BSS_VA:XENDIT
-  routes: ${PAYMENTS_ROUTING:}
+  # Per-channel gateway as one variable, e.g. PAYMENTS_ROUTES=DANA:XENDIT,BSI_VA:XENDIT,BSS_VA:XENDIT
+  # (not PAYMENTS_ROUTING: as an environment variable, that name binds straight to the routing map below).
+  routes: ${PAYMENTS_ROUTES:}
   # Or as a map; send e-wallets to Xendit and GoPay to Midtrans:
   # routing:
   #   OVO: XENDIT

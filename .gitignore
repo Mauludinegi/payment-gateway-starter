@@ -12,3 +12,5 @@ data/
 # Firebase Admin SDK service account (private key)
 firebase-service-account.json
 *-firebase-adminsdk-*.json
+.vercel
+.env*
