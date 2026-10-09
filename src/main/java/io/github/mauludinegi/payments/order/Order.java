@@ -45,6 +45,10 @@ public class Order {
 
     private Instant paidAt;
 
+    private boolean stockHeld;
+
+    private boolean stockShort;
+
     @Version
     private Long version;
 
@@ -80,6 +84,21 @@ public class Order {
             status = OrderStatus.EXPIRED;
         }
     }
+
+    public void holdStock() {
+        stockHeld = true;
+    }
+
+    public void releaseStock() {
+        stockHeld = false;
+    }
+
+    public void markStockShort() {
+        stockShort = true;
+    }
+
+    public boolean isStockHeld() { return stockHeld; }
+    public boolean isStockShort() { return stockShort; }
 
     public boolean isPayable() {
         return status == OrderStatus.PENDING_PAYMENT;

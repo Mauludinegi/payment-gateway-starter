@@ -10,8 +10,13 @@ spring:
     username: ${DATABASE_USERNAME:sa}
     password: ${DATABASE_PASSWORD:}
   flyway:
-    # Supabase exposes the public schema through its Data API, so keep app tables in their own schema there.
     default-schema: ${DATABASE_SCHEMA:public}
+    # {vendor} adds the PostgreSQL-only callback that turns on row level security (see afterMigrate.sql).
+    locations: classpath:db/migration,classpath:db/callback/{vendor}
+  servlet:
+    multipart:
+      max-file-size: 2MB
+      max-request-size: 3MB
   jpa:
     open-in-view: false
     hibernate:
@@ -26,13 +31,25 @@ auth:
   session-ttl: ${AUTH_SESSION_TTL:P7D}
   # Name-and-email sign-in for local runs without Firebase. Turn off in production.
   dev-login-enabled: ${AUTH_DEV_LOGIN_ENABLED:true}
-  upstash:
-    rest-url: ${UPSTASH_REDIS_REST_URL:}
-    rest-token: ${UPSTASH_REDIS_REST_TOKEN:}
+  # Comma-separated. Google accounts with these verified emails become ADMIN when they sign in;
+  # after that, admins manage roles in the dashboard.
+  admin-emails: ${ADMIN_EMAILS:}
+  # Dev sign-in emails that become ADMIN (only while dev sign-in is enabled).
+  dev-admin-emails: ${AUTH_DEV_ADMIN_EMAILS:admin@example.com}
 
-admin:
-  # Bearer token for /api/admin. The default only exists so the demo runs; always set ADMIN_TOKEN when deploying.
-  token: ${ADMIN_TOKEN:demo-admin-token}
+# Sessions and the catalogue cache. Without these, both are kept in this instance's memory.
+upstash:
+  rest-url: ${UPSTASH_REDIS_REST_URL:}
+  rest-token: ${UPSTASH_REDIS_REST_TOKEN:}
+
+storage:
+  # Product images. With a Supabase URL and secret key (Project settings > API keys) they go to a public Storage
+  # bucket, created on the first upload; otherwise to local-dir, served at /api/media.
+  supabase:
+    url: ${SUPABASE_URL:}
+    secret-key: ${SUPABASE_SECRET_KEY:}
+    bucket: ${SUPABASE_STORAGE_BUCKET:product-images}
+  local-dir: ${MEDIA_DIR:data/media}
 
 management:
   endpoints:
@@ -43,7 +60,9 @@ management:
 payments:
   # Gateway for channels not listed under routing: SIMULATOR, XENDIT, or MIDTRANS.
   default-provider: ${PAYMENTS_DEFAULT_PROVIDER:SIMULATOR}
-  # Example: send e-wallets to Xendit and GoPay to Midtrans.
+  # Per-channel gateway as one variable, e.g. PAYMENTS_ROUTING=DANA:XENDIT,BSI_VA:XENDIT,BSS_VA:XENDIT
+  routes: ${PAYMENTS_ROUTING:}
+  # Or as a map; send e-wallets to Xendit and GoPay to Midtrans:
   # routing:
   #   OVO: XENDIT
   #   DANA: XENDIT

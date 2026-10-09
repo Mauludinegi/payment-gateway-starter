@@ -44,7 +44,7 @@ class XenditGatewayTest {
         RestClient.Builder builder = RestClient.builder();
         server = MockRestServiceServer.bindTo(builder).build();
         PaymentsProperties properties = new PaymentsProperties(null, null, null, null, "https://shop.test/orders/{orderId}",
-                new PaymentsProperties.Xendit("xnd_development_key", TOKEN, "https://api.xendit.test"), null, null);
+                new PaymentsProperties.Xendit("xnd_development_key", TOKEN, "https://api.xendit.test"), null, null, null);
         gateway = new XenditGateway(builder, properties, JsonMapper.builder().build());
     }
 

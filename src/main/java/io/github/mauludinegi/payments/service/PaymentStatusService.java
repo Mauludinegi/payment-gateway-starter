@@ -1,6 +1,8 @@
 package io.github.mauludinegi.payments.service;
 
 import io.github.mauludinegi.payments.order.Order;
+import io.github.mauludinegi.payments.order.OrderRepository;
+import io.github.mauludinegi.payments.order.OrderStatus;
 import io.github.mauludinegi.payments.payment.PaymentAttempt;
 import io.github.mauludinegi.payments.payment.PaymentAttemptRepository;
 import io.github.mauludinegi.payments.payment.PaymentStatus;
@@ -30,11 +32,16 @@ public class PaymentStatusService {
     public enum Outcome { UPDATED, UNCHANGED, IGNORED }
 
     private final PaymentAttemptRepository attempts;
+    private final OrderRepository orders;
+    private final StockService stock;
     private final ApplicationEventPublisher events;
     private final Clock clock;
 
-    public PaymentStatusService(PaymentAttemptRepository attempts, ApplicationEventPublisher events, Clock clock) {
+    public PaymentStatusService(PaymentAttemptRepository attempts, OrderRepository orders, StockService stock,
+                                ApplicationEventPublisher events, Clock clock) {
         this.attempts = attempts;
+        this.orders = orders;
+        this.stock = stock;
         this.events = events;
         this.clock = clock;
     }
@@ -58,14 +65,32 @@ public class PaymentStatusService {
         }
 
         attempt.changeStatus(reported, now);
+        events.publishEvent(new OrderChangedEvent(attempt.getOrder().getId()));
         if (reported == PaymentStatus.SUCCEEDED) {
             Order order = attempt.getOrder();
+            boolean wasExpired = order.getStatus() == OrderStatus.EXPIRED;
             if (order.markPaid(now)) {
+                if (wasExpired) {
+                    stock.retakeForLatePayment(order);
+                }
                 events.publishEvent(new OrderPaidEvent(order.getId(), order.getReference(), order.getAmount(), attempt.getId(), attempt.getChannel()));
             } else {
                 log.warn("Order {} was already paid; payment {} is a duplicate and needs a refund", order.getReference(), attemptId);
             }
         }
         return Outcome.UPDATED;
+    }
+
+    /** Closes an unpaid order and puts its stock back on sale, in one transaction. */
+    @Transactional
+    public void expireOrder(UUID orderId) {
+        Order order = orders.findById(orderId)
+                .orElseThrow(() -> new NotFoundException("Order " + orderId + " not found"));
+        if (order.getStatus() != OrderStatus.PENDING_PAYMENT) {
+            return;
+        }
+        order.markExpired();
+        stock.release(order);
+        events.publishEvent(new OrderChangedEvent(orderId));
     }
 }

@@ -43,7 +43,7 @@ class MidtransGatewayTest {
         RestClient.Builder builder = RestClient.builder();
         server = MockRestServiceServer.bindTo(builder).build();
         PaymentsProperties properties = new PaymentsProperties(null, null, null, null, null, null,
-                new PaymentsProperties.Midtrans(SERVER_KEY, "https://api.midtrans.test"), null);
+                new PaymentsProperties.Midtrans(SERVER_KEY, "https://api.midtrans.test"), null, null);
         gateway = new MidtransGateway(builder, properties, JsonMapper.builder().build());
     }
 

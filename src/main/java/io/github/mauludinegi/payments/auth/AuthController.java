@@ -41,10 +41,10 @@ public class AuthController {
     public record Options(boolean google, boolean devLogin) {
     }
 
-    public record UserResponse(UUID id, String name, String email, String pictureUrl, Instant createdAt) {
+    public record UserResponse(UUID id, String name, String email, String pictureUrl, Role role, Instant createdAt) {
 
         public static UserResponse of(User u) {
-            return new UserResponse(u.getId(), u.getName(), u.getEmail(), u.getPictureUrl(), u.getCreatedAt());
+            return new UserResponse(u.getId(), u.getName(), u.getEmail(), u.getPictureUrl(), u.getRole(), u.getCreatedAt());
         }
     }
 

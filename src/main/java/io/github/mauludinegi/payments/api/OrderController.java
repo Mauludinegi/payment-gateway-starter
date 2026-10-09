@@ -3,14 +3,16 @@ package io.github.mauludinegi.payments.api;
 import io.github.mauludinegi.payments.auth.AuthService;
 import io.github.mauludinegi.payments.auth.User;
 import io.github.mauludinegi.payments.auth.UserAuth;
-import io.github.mauludinegi.payments.catalog.Product;
-import io.github.mauludinegi.payments.catalog.ProductRepository;
+import io.github.mauludinegi.payments.catalog.CatalogService;
+import io.github.mauludinegi.payments.catalog.CatalogService.CatalogProduct;
+import io.github.mauludinegi.payments.service.NotFoundException;
 import io.github.mauludinegi.payments.gateway.GatewayRegistry;
 import io.github.mauludinegi.payments.order.Order;
 import io.github.mauludinegi.payments.order.OrderItem;
 import io.github.mauludinegi.payments.payment.Channel;
 import io.github.mauludinegi.payments.payment.PaymentAttempt;
 import io.github.mauludinegi.payments.service.CheckoutService;
+import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
@@ -20,6 +22,7 @@ import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -28,6 +31,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.time.Instant;
 import java.util.List;
@@ -39,14 +43,17 @@ public class OrderController {
 
     private final CheckoutService checkout;
     private final GatewayRegistry gateways;
-    private final ProductRepository products;
+    private final CatalogService catalog;
     private final AuthService auth;
+    private final OrderEventHub events;
 
-    public OrderController(CheckoutService checkout, GatewayRegistry gateways, ProductRepository products, AuthService auth) {
+    public OrderController(CheckoutService checkout, GatewayRegistry gateways, CatalogService catalog, AuthService auth,
+                           OrderEventHub events) {
         this.checkout = checkout;
         this.gateways = gateways;
-        this.products = products;
+        this.catalog = catalog;
         this.auth = auth;
+        this.events = events;
     }
 
     /** The receipt goes to the account's email; the name defaults to the account's but can be changed. */
@@ -66,16 +73,14 @@ public class OrderController {
     public record ChannelOption(Channel channel, String label, Channel.Kind kind, String provider) {
     }
 
-    public record ProductResponse(String id, String name, String description, String category, String icon, long price) {
-
-        static ProductResponse of(Product p) {
-            return new ProductResponse(p.getId(), p.getName(), p.getDescription(), p.getCategory(), p.getIcon(), p.getPrice());
-        }
+    @GetMapping("/products")
+    public List<CatalogProduct> products() {
+        return catalog.products();
     }
 
-    @GetMapping("/products")
-    public List<ProductResponse> products() {
-        return products.findByActiveTrueOrderBySortOrder().stream().map(ProductResponse::of).toList();
+    @GetMapping("/products/{id}")
+    public CatalogProduct product(@PathVariable String id) {
+        return catalog.product(id).orElseThrow(() -> new NotFoundException("Product " + id + " not found"));
     }
 
     @GetMapping("/channels")
@@ -100,6 +105,14 @@ public class OrderController {
     @GetMapping("/orders/{id}")
     public OrderResponse get(@RequestAttribute(UserAuth.USER_ID) UUID userId, @PathVariable UUID id) {
         return OrderResponse.of(checkout.viewOwned(id, userId));
+    }
+
+    /** Server-Sent Events: an {@code order} event now and after every change, until the order is paid or expired. */
+    @GetMapping(path = "/orders/{id}/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter events(@RequestAttribute(UserAuth.USER_ID) UUID userId, @PathVariable UUID id,
+                             HttpServletResponse response) {
+        response.setHeader("X-Accel-Buffering", "no");
+        return events.subscribe(id, userId);
     }
 
     @PostMapping("/orders/{id}/payments")

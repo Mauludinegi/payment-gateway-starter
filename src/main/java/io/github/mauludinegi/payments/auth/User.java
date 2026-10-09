@@ -2,6 +2,8 @@ package io.github.mauludinegi.payments.auth;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 
@@ -26,6 +28,10 @@ public class User {
 
     private String pictureUrl;
 
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    private Role role;
+
     @Column(nullable = false)
     private Instant createdAt;
 
@@ -38,6 +44,7 @@ public class User {
     public User(String externalId, Instant now) {
         this.id = UUID.randomUUID();
         this.externalId = externalId;
+        this.role = Role.CUSTOMER;
         this.createdAt = now;
         this.lastLoginAt = now;
     }
@@ -50,11 +57,20 @@ public class User {
         this.lastLoginAt = now;
     }
 
+    public void changeRole(Role role) {
+        this.role = role;
+    }
+
+    public boolean isAdmin() {
+        return role == Role.ADMIN;
+    }
+
     public UUID getId() { return id; }
     public String getExternalId() { return externalId; }
     public String getEmail() { return email; }
     public String getName() { return name; }
     public String getPictureUrl() { return pictureUrl; }
+    public Role getRole() { return role; }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getLastLoginAt() { return lastLoginAt; }
 }

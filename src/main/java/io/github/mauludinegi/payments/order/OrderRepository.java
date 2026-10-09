@@ -5,6 +5,7 @@ import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Query;
 
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.UUID;
 
@@ -29,4 +30,11 @@ public interface OrderRepository extends JpaRepository<Order, UUID>, JpaSpecific
     List<Order> findByPaidAtGreaterThanEqual(Instant since);
 
     List<Order> findTop50ByUserIdOrderByCreatedAtDesc(UUID userId);
+
+    @Query("""
+            select new io.github.mauludinegi.payments.order.UserOrderTotal(o.userId, count(o),
+                coalesce(sum(case when o.status = io.github.mauludinegi.payments.order.OrderStatus.PAID then o.amount else 0 end), 0))
+            from Order o where o.userId in :userIds group by o.userId
+            """)
+    List<UserOrderTotal> totalsByUser(Collection<UUID> userIds);
 }

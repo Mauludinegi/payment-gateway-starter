@@ -16,14 +16,16 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@SpringBootTest(properties = "admin.token=test-admin-token")
+@SpringBootTest
 class AdminApiTest {
 
-    private static final String BEARER = "Bearer test-admin-token";
+    /** Admin session; dev sign-in with admin@example.com is an admin by default. */
+    String BEARER;
 
     @Autowired
     WebApplicationContext context;
@@ -40,18 +42,57 @@ class AdminApiTest {
     @BeforeEach
     void setUp() {
         String session = auth.signInForDevelopment("Budi", "budi@example.com").session().token();
+        BEARER = "Bearer " + auth.signInForDevelopment("Ana Admin", "admin@example.com").session().token();
         mvc = MockMvcBuilders.webAppContextSetup(context)
                 .defaultRequest(get("/").header(HttpHeaders.AUTHORIZATION, "Bearer " + session))
                 .build();
     }
 
     @Test
-    void rejectsMissingOrWrongToken() throws Exception {
-        mvc.perform(get("/api/admin/stats")).andExpect(status().isUnauthorized());
-        mvc.perform(get("/api/admin/stats").header(HttpHeaders.AUTHORIZATION, "Bearer demo-admin-token"))
+    void onlyAdminsGetIn() throws Exception {
+        // The default request carries Budi's customer session.
+        mvc.perform(get("/api/admin/stats")).andExpect(status().isForbidden());
+        mvc.perform(get("/api/admin/stats").header(HttpHeaders.AUTHORIZATION, "Bearer not-a-session"))
                 .andExpect(status().isUnauthorized());
-        mvc.perform(get("/api/admin/session").header(HttpHeaders.AUTHORIZATION, BEARER))
+        mvc.perform(get("/api/admin/stats").header(HttpHeaders.AUTHORIZATION, BEARER))
                 .andExpect(status().isOk());
+        mvc.perform(get("/api/auth/me").header(HttpHeaders.AUTHORIZATION, BEARER))
+                .andExpect(jsonPath("$.role").value("ADMIN"));
+    }
+
+    @Test
+    void adminsManageRolesAndChangesApplyImmediately() throws Exception {
+        String sari = "Bearer " + auth.signInForDevelopment("Sari Role", "sari.role@example.com").session().token();
+        String sariId = json.readTree(mvc.perform(get("/api/auth/me").header(HttpHeaders.AUTHORIZATION, sari))
+                .andExpect(jsonPath("$.role").value("CUSTOMER"))
+                .andReturn().getResponse().getContentAsString()).path("id").asString();
+        mvc.perform(get("/api/admin/stats").header(HttpHeaders.AUTHORIZATION, sari)).andExpect(status().isForbidden());
+
+        mvc.perform(get("/api/admin/users").param("q", "sari.role").header(HttpHeaders.AUTHORIZATION, BEARER))
+                .andExpect(jsonPath("$.total").value(1))
+                .andExpect(jsonPath("$.items[0].role").value("CUSTOMER"));
+
+        mvc.perform(patch("/api/admin/users/{id}/role", sariId).header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"role\":\"ADMIN\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.role").value("ADMIN"));
+        // Same session, no new sign-in needed.
+        mvc.perform(get("/api/admin/stats").header(HttpHeaders.AUTHORIZATION, sari)).andExpect(status().isOk());
+
+        mvc.perform(patch("/api/admin/users/{id}/role", sariId).header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"role\":\"CUSTOMER\"}"))
+                .andExpect(status().isOk());
+        mvc.perform(get("/api/admin/stats").header(HttpHeaders.AUTHORIZATION, sari)).andExpect(status().isForbidden());
+
+        // Nobody can change their own role, so the last admin cannot lock everyone out.
+        mvc.perform(patch("/api/admin/users/{id}/role", sariId).header(HttpHeaders.AUTHORIZATION, sari)
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"role\":\"ADMIN\"}"))
+                .andExpect(status().isForbidden());
+        String adminId = json.readTree(mvc.perform(get("/api/auth/me").header(HttpHeaders.AUTHORIZATION, BEARER))
+                .andReturn().getResponse().getContentAsString()).path("id").asString();
+        mvc.perform(patch("/api/admin/users/{id}/role", adminId).header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"role\":\"CUSTOMER\"}"))
+                .andExpect(status().isConflict());
     }
 
     @Test

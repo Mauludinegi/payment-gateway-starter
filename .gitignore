@@ -1,6 +1,8 @@
 target/
 .env
 *.log
+# Product images when Supabase Storage is not configured
+data/
 
 .idea/
 *.iml

@@ -1,31 +1,33 @@
 package io.github.mauludinegi.payments.admin;
 
+import io.github.mauludinegi.payments.auth.ForbiddenException;
+import io.github.mauludinegi.payments.auth.SessionService;
 import io.github.mauludinegi.payments.auth.UnauthorizedException;
-import io.github.mauludinegi.payments.config.AdminProperties;
-import io.github.mauludinegi.payments.gateway.WebhookSecrets;
+import io.github.mauludinegi.payments.auth.User;
+import io.github.mauludinegi.payments.auth.UserAuth;
+import io.github.mauludinegi.payments.auth.UserRepository;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.http.HttpHeaders;
 import org.springframework.web.servlet.HandlerInterceptor;
 import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
-/** Requires {@code Authorization: Bearer <admin.token>} on every /api/admin request. */
+import java.util.UUID;
+
+/**
+ * Requires a session whose user has the ADMIN role on every /api/admin request. The role is read from the
+ * database each time, so taking it away works immediately, without waiting for the session to expire.
+ */
 @Configuration
 public class AdminAuth implements WebMvcConfigurer, HandlerInterceptor {
 
-    private static final Logger log = LoggerFactory.getLogger(AdminAuth.class);
+    private final SessionService sessions;
+    private final UserRepository users;
 
-    private final String token;
-
-    public AdminAuth(AdminProperties properties) {
-        this.token = properties.token();
-        if (AdminProperties.DEMO_TOKEN.equals(token)) {
-            log.warn("ADMIN_TOKEN is not set; the admin API accepts the demo token. Set ADMIN_TOKEN before deploying.");
-        }
+    public AdminAuth(SessionService sessions, UserRepository users) {
+        this.sessions = sessions;
+        this.users = users;
     }
 
     @Override
@@ -35,11 +37,13 @@ public class AdminAuth implements WebMvcConfigurer, HandlerInterceptor {
 
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) {
-        String header = request.getHeader(HttpHeaders.AUTHORIZATION);
-        String presented = header != null && header.startsWith("Bearer ") ? header.substring(7) : null;
-        if (!WebhookSecrets.matches(token, presented)) {
-            throw new UnauthorizedException("Admin token missing or invalid");
+        UUID userId = sessions.resolve(UserAuth.bearerToken(request))
+                .orElseThrow(() -> new UnauthorizedException("Sign in to continue"));
+        User user = users.findById(userId).orElseThrow(() -> new UnauthorizedException("Sign in to continue"));
+        if (!user.isAdmin()) {
+            throw new ForbiddenException("This needs the ADMIN role");
         }
+        request.setAttribute(UserAuth.USER_ID, userId);
         return true;
     }
 }

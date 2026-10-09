@@ -1,5 +1,7 @@
 package io.github.mauludinegi.payments.auth;
 
+import io.github.mauludinegi.payments.redis.UpstashClient;
+import io.github.mauludinegi.payments.redis.UpstashProperties;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpMethod;
@@ -29,7 +31,7 @@ class UpstashSessionStoreTest {
     void setUp() {
         RestClient.Builder builder = RestClient.builder();
         server = MockRestServiceServer.bindTo(builder).build();
-        store = new UpstashSessionStore(builder, new AuthProperties.Upstash("https://redis.upstash.test", "rest-token"));
+        store = new UpstashSessionStore(new UpstashClient(builder, new UpstashProperties("https://redis.upstash.test", "rest-token")));
     }
 
     @Test
@@ -61,7 +63,7 @@ class UpstashSessionStoreTest {
                 .andRespond(withSuccess("{\"error\":\"WRONGPASS invalid password\"}", MediaType.APPLICATION_JSON));
 
         assertThatThrownBy(() -> store.delete("session:abc"))
-                .isInstanceOf(UpstashSessionStore.UpstashException.class)
+                .isInstanceOf(UpstashClient.UpstashException.class)
                 .hasMessageContaining("WRONGPASS");
     }
 }

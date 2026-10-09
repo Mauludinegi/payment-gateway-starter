@@ -2,7 +2,7 @@
 
 A Spring Boot backend for taking Indonesian payments (virtual accounts, QRIS, e-wallets, and retail outlets) through **Xendit** or **Midtrans**. It handles the parts that usually go wrong in production: duplicate webhooks, forged webhooks, late payments, customers who switch payment methods, and payments that expire.
 
-Customers sign in with **Google** (Firebase Authentication); sessions live in **Redis** (Upstash), and checkout, the payment page, and order history require a session.
+Customers sign in with **Google** (Firebase Authentication); sessions live in **Redis** (Upstash), and checkout, the payment page, and order history require a session. Admins manage the catalogue (product images in **Supabase Storage**, stock that is held at checkout), and customers who paid can rate what they bought.
 
 It runs with zero setup: a built-in **simulator** gateway stands in for the real ones and a dev sign-in stands in for Google, so you can click through the whole checkout before you have any keys.
 
@@ -55,9 +55,24 @@ docker compose up --build
 3. It creates or updates the user and returns an opaque session token. Redis stores only the token's SHA-256 with a TTL (`AUTH_SESSION_TTL`, 7 days by default), so a Redis dump cannot be replayed as a login.
 4. Customer endpoints take `Authorization: Bearer <session>`. Customers see only their own orders; someone else's order returns `404`.
 
+### Roles
+
+Every account is a `CUSTOMER` or an `ADMIN`, stored in `users.role`. The admin API loads the role from the database on each request, so a change applies right away without signing in again.
+
+- Accounts listed in `ADMIN_EMAILS` become admins when they sign in with Google (verified email only). Locally, the dev sign-in does the same for `AUTH_DEV_ADMIN_EMAILS` (`admin@example.com` by default).
+- Admins promote or demote others in the dashboard (`PATCH /api/admin/users/{id}/role`). Nobody can change their own role, so there is always an admin left, and the lists never demote anyone.
+
 Without `UPSTASH_REDIS_REST_URL`, sessions are kept in memory (single instance, lost on restart). `POST /api/auth/dev` signs in with just a name and email for local runs; it is on by default and must be turned off with `AUTH_DEV_LOGIN_ENABLED=false` in production.
 
-**Supabase:** use the session pooler (`aws-0-<region>.pooler.supabase.com:5432`, user `postgres.<project-ref>`), because the direct `db.<ref>.supabase.co` host is IPv6-only. Set `DATABASE_SCHEMA=payments` so the tables are not in `public`, which Supabase exposes through its Data API.
+**Supabase:** use the session pooler (`aws-0-<region>.pooler.supabase.com:5432`, user `postgres.<project-ref>`), because the direct `db.<ref>.supabase.co` host is IPv6-only. Tables go in `public` (change it with `DATABASE_SCHEMA`). Supabase serves `public` through its Data API, so after every migration Flyway turns on row level security for all app tables (`db/callback/postgresql/afterMigrate.sql`). With no policies, the anon and authenticated keys get nothing, while the app, which owns the tables, works as usual.
+
+### Products, stock, and reviews
+
+- **Products** are managed at `/api/admin/products`. The ID is fixed once created because orders refer to it; products are hidden rather than deleted.
+- **Images** (JPEG, PNG, or WebP, up to 2 MB, checked by their bytes rather than the file name) go to the public Supabase Storage bucket `SUPABASE_STORAGE_BUCKET` (`product-images`, created on the first upload). Use the project's secret key (`sb_secret_…`) or the legacy `service_role` key; it stays on the server. Without Supabase settings, images are saved under `MEDIA_DIR` and served at `/api/media/products/…`. Every upload gets a new name, so images can be cached for a year.
+- **Stock** is optional: empty means unlimited. Placing an order takes the stock in the same transaction, with a conditional update so two buyers cannot get the last unit, and returns `409` when there is not enough. An order that expires unpaid gives its stock back. If a payment arrives after that and the units are gone, the order is still paid and flagged for the admin (`stockShort`).
+- **Reviews:** customers with a paid order for a product can give it 1 to 5 stars and an optional comment, one review per product, which they can edit or delete. Other shoppers see only a first name and last initial. Admins can hide a review; hidden reviews leave the average, and the author is told.
+- **The catalogue is cached** in Redis (Upstash) for 10 minutes and cleared after every change to products, stock, or reviews commits. If Redis is down, the database answers. Checkout always reads stock and prices from the database, never from the cache. Keep the Upstash database in the same region as the API and Postgres, or the cache is slower than the database.
 
 ## What it does
 
@@ -76,14 +91,14 @@ sequenceDiagram
     A->>A: verify sender, drop duplicates
     A->>G: fetch the real status
     A->>A: mark payment SUCCEEDED, order PAID (once)
-    C->>A: GET /api/orders/{id} → PAID
+    A-->>C: SSE /api/orders/{id}/events → PAID
 ```
 
 ### Channels
 
 | Kind | Xendit | Midtrans |
 | --- | --- | --- |
-| Virtual account | BCA, BNI, BRI, Mandiri, Permata, BSI | BCA, BNI, BRI, Mandiri, Permata |
+| Virtual account | BCA, BNI, BRI, Mandiri, Permata, BSI, Bank Sahabat Sampoerna | BCA, BNI, BRI, Mandiri, Permata |
 | QR | QRIS | QRIS |
 | E-wallet | OVO, DANA, ShopeePay, LinkAja | GoPay, ShopeePay |
 | Retail outlet | Indomaret, Alfamart | Indomaret, Alfamart |
@@ -97,11 +112,22 @@ payments:
     GOPAY: MIDTRANS
 ```
 
+Or with environment variables, e.g. Midtrans for everything except the channels only Xendit has:
+
+```bash
+PAYMENTS_DEFAULT_PROVIDER=MIDTRANS
+PAYMENTS_ROUTING=DANA:XENDIT,OVO:XENDIT,LINKAJA:XENDIT,BSI_VA:XENDIT,BSS_VA:XENDIT
+```
+
+Checkout only offers channels whose gateway has keys and supports them, and a typo in `PAYMENTS_ROUTING` stops the app at startup. Some channels, such as Bank Sahabat Sampoerna, must also be activated in the gateway's dashboard first.
+
 ### API
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `GET` | `/api/products` | Active products from the catalogue |
+| `GET` | `/api/products` | Active products with `stock` (null = unlimited), `imageUrl`, `rating`, and `reviewCount` (cached) |
+| `GET` | `/api/products/{id}` | One active product |
+| `GET` | `/api/products/{id}/reviews?page=&size=` | Visible reviews, newest first |
 | `GET` | `/api/channels` | Channels whose gateway is configured |
 | `GET` | `/api/auth/options` | Which sign-in methods are enabled |
 | `POST` | `/api/auth/google` | `{idToken}` from Firebase; returns `{token, expiresAt, user}` |
@@ -110,14 +136,19 @@ payments:
 | `DELETE` | `/api/auth/session` | Sign out; revokes the session |
 | `POST` | `/api/orders` | `{items: [{productId, quantity}], customerName?}` (session); prices come from the catalogue, the receipt email from the account |
 | `GET` | `/api/orders/{id}` | Order with items, its latest payment, and instructions (session) |
+| `GET` | `/api/orders/{id}/events` | Server-Sent Events: an `order` event now and on every change, until it is paid or expired (session) |
 | `POST` | `/api/orders/{id}/payments` | `{channel, mobileNumber?}` (session); `mobileNumber` (`+62…`) is required for OVO |
 | `GET` | `/api/me/orders` | The customer's 50 latest orders (session) |
+| `GET` | `/api/me/reviews/{productId}` | `{canReview, review, hidden}` for the signed-in customer (session) |
+| `PUT` | `/api/me/reviews/{productId}` | `{rating: 1-5, comment?}`; only after a paid order for it (session) |
+| `DELETE` | `/api/me/reviews/{productId}` | Delete your review (session) |
+| `GET` | `/api/media/products/{file}` | Product images when Supabase Storage is not configured |
 | `POST` | `/webhooks/{xendit\|midtrans}` | Gateway notifications |
 | `POST` | `/api/simulator/orders/{id}/{pay\|fail\|expire}` | Simulator only; disable in production |
 
 (session) needs `Authorization: Bearer <session token>`.
 
-Admin endpoints need `Authorization: Bearer $ADMIN_TOKEN`:
+Admin endpoints need the session of an `ADMIN` account (`401` without a session, `403` for customers):
 
 | Method | Path | Notes |
 | --- | --- | --- |
@@ -126,8 +157,17 @@ Admin endpoints need `Authorization: Bearer $ADMIN_TOKEN`:
 | `GET` | `/api/admin/orders/{id}` | Items, every payment attempt, and its webhooks |
 | `GET` | `/api/admin/webhooks?page=&size=` | Every processed event with the confirmed status and outcome |
 | `POST` | `/api/admin/payments/{id}/sync` | Re-check one payment with its gateway, for a missed webhook |
+| `GET` | `/api/admin/users?role=&q=&page=&size=` | Accounts with their orders and amount spent |
+| `PATCH` | `/api/admin/users/{id}/role` | `{role: CUSTOMER\|ADMIN}`; not for your own account |
+| `GET` | `/api/admin/products` | Every product, including hidden ones, with `version` |
+| `POST` | `/api/admin/products` | `{id, name, description, category, icon, price, active, sortOrder, stock}` |
+| `PUT` | `/api/admin/products/{id}` | Same fields plus the `version` you loaded; `409` if it changed since, for example because an order took stock |
+| `PUT` | `/api/admin/products/{id}/image` | Multipart `file` |
+| `DELETE` | `/api/admin/products/{id}/image` | Back to the icon |
+| `GET` | `/api/admin/reviews?productId=&hidden=&page=&size=` | Reviews with the author's email |
+| `PATCH` | `/api/admin/reviews/{id}` | `{hidden: true\|false}` |
 
-Errors are returned as [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) problem details (`404`, `400`, `409` for an order that is already paid or expired, `401` for a missing session or a webhook that fails verification, `502` when the gateway rejects a request).
+Errors are returned as [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) problem details (`404`, `400`, `409` for an order that is already paid or expired, for stock that ran out, or for a product edited since you loaded it, `401` for a missing session or a webhook that fails verification, `403` for a customer on the admin API, `502` when the gateway or the image storage rejects a request).
 
 ## Design decisions
 
@@ -139,6 +179,7 @@ Errors are returned as [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) proble
 - **Concurrency.** Entities use optimistic locking (`@Version`), so a webhook and the expiry job racing on the same payment cannot both win. Requests run on virtual threads.
 - **The server prices every order.** The client sends product IDs and quantities only; names and prices are copied into `order_items`, so later catalogue edits never change a placed order.
 - **Double payments are visible.** If an old method is paid after the customer switched and paid the new one, the order stays paid once and the admin API flags it for a refund.
+- **The payment page is pushed, not polled.** Status changes publish `OrderChangedEvent`; after the transaction commits, `OrderEventHub` sends the order to its open SSE streams on another thread, so a slow browser never delays a webhook. Streams are kept per instance with a heartbeat every 25 seconds and closed on shutdown; with several instances the web app's fallback polling covers pages connected elsewhere (or publish the event over Redis pub/sub).
 - **Gateways sit behind one interface.** `PaymentGateway` has `create`, `fetchStatus`, `cancel`, and `parseWebhook`. Adding another provider means one new class; checkout and webhook handling stay the same.
 
 ## Connecting a real gateway
@@ -164,11 +205,12 @@ This uses the [Core API](https://docs.midtrans.com/reference/charge-transactions
 ### Before going live
 
 - Set `PAYMENTS_SIMULATOR_ENABLED=false`.
-- Set a long random `ADMIN_TOKEN`; without it the admin API accepts the demo token and logs a warning.
+- Set `ADMIN_EMAILS` to the first admin's Google account.
 - Set `PAYMENTS_RETURN_URL` to your web app's order page, e.g. `https://shop.example.com/orders/{orderId}`.
-- Set `AUTH_DEV_LOGIN_ENABLED=false`, `FIREBASE_PROJECT_ID`, and the Upstash variables so sessions survive restarts and are shared between instances.
+- Set `AUTH_DEV_LOGIN_ENABLED=false` (this also ends the dev admin account), `FIREBASE_PROJECT_ID`, and the Upstash variables so sessions survive restarts and are shared between instances.
 - In the Firebase console, enable Google under Authentication > Sign-in method and add your web domain to the authorised domains.
 - Use PostgreSQL (`DATABASE_URL`, `DATABASE_USERNAME`, `DATABASE_PASSWORD`, optionally `DATABASE_SCHEMA`). The schema is managed by Flyway.
+- Set `SUPABASE_URL` and `SUPABASE_SECRET_KEY` so product images live in Supabase Storage instead of the server's disk.
 
 ## Tests
 
@@ -179,14 +221,22 @@ This uses the [Core API](https://docs.midtrans.com/reference/charge-transactions
 - `PaymentStatusServiceTest`: status rules (paid once, no downgrades, late payments).
 - `XenditGatewayTest`, `MidtransGatewayTest`: request bodies, status mapping, and webhook verification against mocked HTTP.
 - `CheckoutFlowTest`: the full flow over HTTP with the simulator, including server-side pricing, duplicate and forged webhooks, and switching methods.
-- `AdminApiTest`: token check, search and filters, orders paid twice flagged for refund, and re-checking a payment whose webhook was missed.
+- `AdminApiTest`: only admins get in, role changes apply immediately and never to yourself, search and filters, orders paid twice flagged for refund, and re-checking a payment whose webhook was missed.
 - `AuthApiTest`: endpoints that need a session, customers seeing only their own orders, repeat sign-ins, and sign-out revoking the session.
+- `AuthServiceTest`: who becomes an admin on sign-in, and that nobody is demoted.
+- `OrderEventsTest`: the payment page's stream gets every change until the order is paid, only the owner can open it, and shutdown closes it.
 - `FirebaseTokenVerifierTest`: Google ID tokens with a wrong project, an expired time, or a foreign signing key are rejected.
 - `UpstashSessionStoreTest`: the Redis REST commands and error handling.
+- `StockTest`: stock held at checkout and returned on expiry, a late payment after the stock ran out, and 12 simultaneous buyers for 3 units.
+- `ReviewApiTest`: only paying customers review, one review each, averages, and hiding.
+- `ProductAdminApiTest`: creating and editing products, stale edits refused, image uploads checked by content.
+- `CatalogServiceTest`: the cache is filled once, cleared after changes, and skipped when Redis fails.
+- `SupabaseImageStoreTest`: Storage requests, keys, and bucket creation against mocked HTTP.
+- `PaymentsPropertiesTest`: per-channel routing from `PAYMENTS_ROUTING`.
 
 ## Stack
 
-Java 21, Spring Boot 4, Spring Data JPA, Flyway, PostgreSQL (H2 for local runs and tests), Redis (Upstash REST), Firebase Authentication (Nimbus JOSE + JWT), Docker, GitHub Actions.
+Java 21, Spring Boot 4, Spring Data JPA, Flyway, PostgreSQL (H2 for local runs and tests), Redis (Upstash REST), Firebase Authentication (Nimbus JOSE + JWT), Supabase Storage, Docker, GitHub Actions.
 
 ## License
 

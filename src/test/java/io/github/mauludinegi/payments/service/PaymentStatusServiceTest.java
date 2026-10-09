@@ -1,6 +1,7 @@
 package io.github.mauludinegi.payments.service;
 
 import io.github.mauludinegi.payments.order.Order;
+import io.github.mauludinegi.payments.order.OrderRepository;
 import io.github.mauludinegi.payments.order.OrderStatus;
 import io.github.mauludinegi.payments.payment.Channel;
 import io.github.mauludinegi.payments.payment.PaymentAttempt;
@@ -31,7 +32,9 @@ class PaymentStatusServiceTest {
 
     private final PaymentAttemptRepository attempts = mock(PaymentAttemptRepository.class);
     private final ApplicationEventPublisher events = mock(ApplicationEventPublisher.class);
-    private final PaymentStatusService service = new PaymentStatusService(attempts, events, Clock.fixed(NOW, ZoneOffset.UTC));
+    private final StockService stock = mock(StockService.class);
+    private final PaymentStatusService service = new PaymentStatusService(attempts, mock(OrderRepository.class), stock, events,
+            Clock.fixed(NOW, ZoneOffset.UTC));
 
     private Order order;
 

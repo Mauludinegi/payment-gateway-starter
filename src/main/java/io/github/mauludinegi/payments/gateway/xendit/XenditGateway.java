@@ -43,6 +43,7 @@ public class XenditGateway implements PaymentGateway {
             Map.entry(Channel.MANDIRI_VA, "MANDIRI_VIRTUAL_ACCOUNT"),
             Map.entry(Channel.PERMATA_VA, "PERMATA_VIRTUAL_ACCOUNT"),
             Map.entry(Channel.BSI_VA, "BSI_VIRTUAL_ACCOUNT"),
+            Map.entry(Channel.BSS_VA, "BSS_VIRTUAL_ACCOUNT"),
             Map.entry(Channel.QRIS, "QRIS"),
             Map.entry(Channel.OVO, "OVO"),
             Map.entry(Channel.DANA, "DANA"),

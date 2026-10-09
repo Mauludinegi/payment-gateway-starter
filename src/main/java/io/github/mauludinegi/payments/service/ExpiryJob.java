@@ -8,6 +8,7 @@ import io.github.mauludinegi.payments.payment.PaymentAttemptRepository;
 import io.github.mauludinegi.payments.payment.PaymentStatus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -67,8 +68,11 @@ public class ExpiryJob {
 
     private void expireOrders(Instant now) {
         for (Order order : orders.findExpiredWithoutPendingPayment(now)) {
-            order.markExpired();
-            orders.save(order);
+            try {
+                statuses.expireOrder(order.getId());
+            } catch (ObjectOptimisticLockingFailureException e) {
+                log.info("Order {} changed while expiring (probably paid); checking again next run", order.getReference());
+            }
         }
     }
 }

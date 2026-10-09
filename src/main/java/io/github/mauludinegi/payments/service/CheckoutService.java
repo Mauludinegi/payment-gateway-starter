@@ -18,6 +18,7 @@ import io.github.mauludinegi.payments.payment.PaymentAttemptRepository;
 import io.github.mauludinegi.payments.payment.PaymentStatus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -51,11 +52,14 @@ public class CheckoutService {
     private final GatewayRegistry gateways;
     private final PaymentStatusService statuses;
     private final PaymentsProperties properties;
+    private final ApplicationEventPublisher events;
+    private final StockService stock;
     private final Clock clock;
 
     public CheckoutService(OrderRepository orders, OrderItemRepository items, ProductRepository products,
                            PaymentAttemptRepository attempts, GatewayRegistry gateways,
-                           PaymentStatusService statuses, PaymentsProperties properties, Clock clock) {
+                           PaymentStatusService statuses, PaymentsProperties properties,
+                           ApplicationEventPublisher events, StockService stock, Clock clock) {
         this.orders = orders;
         this.items = items;
         this.products = products;
@@ -63,6 +67,8 @@ public class CheckoutService {
         this.gateways = gateways;
         this.statuses = statuses;
         this.properties = properties;
+        this.events = events;
+        this.stock = stock;
         this.clock = clock;
     }
 
@@ -100,6 +106,9 @@ public class CheckoutService {
         String description = quantities.size() == 1 ? first : first + " + " + (quantities.size() - 1) + " more";
         Order order = orders.save(new Order(userId, newReference(now), description, amount, customerName, customerEmail,
                 now, now.plus(properties.orderTtl())));
+        Map<Product, Integer> byProduct = new LinkedHashMap<>();
+        quantities.forEach((id, quantity) -> byProduct.put(found.get(id), quantity));
+        stock.hold(order, byProduct);
         List<OrderItem> saved = items.saveAll(quantities.entrySet().stream()
                 .map(e -> {
                     Product p = found.get(e.getKey());
@@ -138,6 +147,7 @@ public class CheckoutService {
         }
         attempt.attachGatewayPayment(payment.providerRef(), payment.instruction(), payment.expiresAt(), clock.instant());
         attempts.save(attempt);
+        events.publishEvent(new OrderChangedEvent(orderId));
         return view(orderId);
     }
 

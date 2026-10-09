@@ -7,6 +7,7 @@ public enum Channel {
     MANDIRI_VA(Kind.VIRTUAL_ACCOUNT, "Mandiri Virtual Account"),
     PERMATA_VA(Kind.VIRTUAL_ACCOUNT, "Permata Virtual Account"),
     BSI_VA(Kind.VIRTUAL_ACCOUNT, "BSI Virtual Account"),
+    BSS_VA(Kind.VIRTUAL_ACCOUNT, "Bank Sahabat Sampoerna Virtual Account"),
     QRIS(Kind.QR, "QRIS"),
     OVO(Kind.EWALLET, "OVO"),
     DANA(Kind.EWALLET, "DANA"),
