@@ -1,0 +1,43 @@
+spring:
+  application:
+    name: payment-gateway-starter
+  threads:
+    virtual:
+      enabled: true
+  datasource:
+    # Zero-setup default: in-memory H2. docker compose switches this to PostgreSQL.
+    url: ${DATABASE_URL:jdbc:h2:mem:payments;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH}
+    username: ${DATABASE_USERNAME:sa}
+    password: ${DATABASE_PASSWORD:}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+
+payments:
+  # Gateway for channels not listed under routing: SIMULATOR, XENDIT, or MIDTRANS.
+  default-provider: ${PAYMENTS_DEFAULT_PROVIDER:SIMULATOR}
+  # Example: send e-wallets to Xendit and GoPay to Midtrans.
+  # routing:
+  #   OVO: XENDIT
+  #   DANA: XENDIT
+  #   GOPAY: MIDTRANS
+  order-ttl: PT24H
+  payment-ttl: PT1H
+  return-url: ${PAYMENTS_RETURN_URL:http://localhost:8080/}
+  expiry-check-interval: PT1M
+  xendit:
+    secret-key: ${XENDIT_SECRET_KEY:}
+    callback-token: ${XENDIT_CALLBACK_TOKEN:}
+  midtrans:
+    server-key: ${MIDTRANS_SERVER_KEY:}
+    base-url: ${MIDTRANS_BASE_URL:https://api.sandbox.midtrans.com}
+  simulator:
+    enabled: ${PAYMENTS_SIMULATOR_ENABLED:true}
+    secret: ${PAYMENTS_SIMULATOR_SECRET:local-simulator-secret}
