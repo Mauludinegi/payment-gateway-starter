@@ -164,7 +164,8 @@ public class AdminService {
 
     public record WebhookRow(Long id, Provider provider, String eventKey, Instant receivedAt, UUID paymentId,
                              UUID orderId, String orderReference, Channel channel,
-                             PaymentStatus confirmedStatus, PaymentStatusService.Outcome outcome) {
+                             PaymentStatus confirmedStatus, PaymentStatusService.Outcome outcome,
+                             String providerRef, boolean queued) {
     }
 
     public PageResult<WebhookRow> webhooks(int page, int size) {
@@ -176,7 +177,8 @@ public class AdminService {
             PaymentAttempt a = e.getAttemptId() == null ? null : byId.get(e.getAttemptId());
             return new WebhookRow(e.getId(), e.getProvider(), e.getEventKey(), e.getReceivedAt(), e.getAttemptId(),
                     a == null ? null : a.getOrder().getId(), a == null ? null : a.getOrder().getReference(),
-                    a == null ? null : a.getChannel(), e.getConfirmedStatus(), e.getOutcome());
+                    a == null ? null : a.getChannel(), e.getConfirmedStatus(), e.getOutcome(),
+                    e.getProviderRef(), e.isReplayPending());
         }).toList();
         return new PageResult<>(rows, page, size, result.getTotalElements());
     }

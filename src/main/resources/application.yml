@@ -19,6 +19,11 @@ spring:
     default-schema: ${DATABASE_SCHEMA:public}
     # {vendor} adds the PostgreSQL-only callback that turns on row level security (see afterMigrate.sql).
     locations: classpath:db/migration,classpath:db/callback/{vendor}
+  http:
+    clients:
+      # Gateway calls. A timed-out create is reconciled later (see PaymentReconciler), never assumed failed.
+      connect-timeout: 5s
+      read-timeout: 20s
   servlet:
     multipart:
       max-file-size: 2MB

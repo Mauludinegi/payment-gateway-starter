@@ -3,6 +3,7 @@ package io.github.mauludinegi.payments.gateway.xendit;
 import io.github.mauludinegi.payments.config.PaymentsProperties;
 import io.github.mauludinegi.payments.gateway.GatewayException;
 import io.github.mauludinegi.payments.gateway.GatewayPayment;
+import io.github.mauludinegi.payments.gateway.GatewayUnavailableException;
 import io.github.mauludinegi.payments.gateway.InvalidWebhookException;
 import io.github.mauludinegi.payments.gateway.PaymentGateway;
 import io.github.mauludinegi.payments.gateway.PaymentRequest;
@@ -111,6 +112,16 @@ public class XenditGateway implements PaymentGateway {
                 expires == null ? null : Instant.parse(expires));
     }
 
+    /**
+     * Payment requests are not deduplicated and cannot be looked up by reference_id, so a retry makes a
+     * second one. The first was never shown to the customer and expires unpaid, except OVO, which
+     * pushes a payment prompt to the phone as soon as it is created.
+     */
+    @Override
+    public boolean canRetryCreate(Channel channel) {
+        return channel != Channel.OVO;
+    }
+
     @Override
     public PaymentStatus fetchStatus(String providerRef) {
         JsonNode response = call(() -> http.get().uri("/v3/payment_requests/{id}", providerRef)
@@ -199,9 +210,13 @@ public class XenditGateway implements PaymentGateway {
         try {
             return request.get();
         } catch (RestClientResponseException e) {
-            throw new GatewayException("Xendit returned " + e.getStatusCode().value() + ": " + e.getResponseBodyAsString(), e);
+            String message = "Xendit returned " + e.getStatusCode().value() + ": " + e.getResponseBodyAsString();
+            if (e.getStatusCode().is5xxServerError() || e.getStatusCode().value() == 408 || e.getStatusCode().value() == 429) {
+                throw new GatewayUnavailableException(message, e);
+            }
+            throw new GatewayException(message, e);
         } catch (RestClientException e) {
-            throw new GatewayException("Xendit is unreachable", e);
+            throw new GatewayUnavailableException("Xendit did not answer: " + e.getMessage(), e);
         }
     }
 

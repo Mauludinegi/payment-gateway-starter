@@ -39,6 +39,7 @@ public class SimulatorGateway implements PaymentGateway {
     private final PaymentsProperties.Simulator config;
     private final JsonMapper json;
     private final Map<String, PaymentStatus> statuses = new ConcurrentHashMap<>();
+    private final Map<String, GatewayPayment> created = new ConcurrentHashMap<>();
 
     public SimulatorGateway(PaymentsProperties properties, JsonMapper json) {
         this.config = properties.simulator();
@@ -60,10 +61,16 @@ public class SimulatorGateway implements PaymentGateway {
         return EnumSet.allOf(Channel.class);
     }
 
+    /** Idempotent per attempt, like the real gateways: a retry returns the payment created the first time. */
     @Override
     public GatewayPayment create(PaymentRequest request) {
-        String ref = "sim-" + request.attemptId();
-        statuses.put(ref, PaymentStatus.PENDING);
+        return created.computeIfAbsent("sim-" + request.attemptId(), ref -> {
+            statuses.put(ref, PaymentStatus.PENDING);
+            return newPayment(ref, request);
+        });
+    }
+
+    private GatewayPayment newPayment(String ref, PaymentRequest request) {
         Instruction instruction = switch (request.channel().kind()) {
             case VIRTUAL_ACCOUNT -> new Instruction(Instruction.Type.VIRTUAL_ACCOUNT_NUMBER, "8808" + digits(12));
             case QR -> new Instruction(Instruction.Type.QR_STRING, "00020101021226590013ID.SIMULATOR" + digits(16) + "5303360540" + request.amount() + "6304ABCD");

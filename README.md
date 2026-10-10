@@ -1,5 +1,9 @@
 # Payment Gateway Starter
 
+**Live demo:** [payment-gateway-starter-web.vercel.app](https://payment-gateway-starter-web.vercel.app) · **API:** [payment-gateway-starter.vercel.app](https://payment-gateway-starter.vercel.app/api/channels) · **API docs:** [Swagger UI](https://payment-gateway-starter.vercel.app/swagger-ui.html) ([OpenAPI JSON](https://payment-gateway-starter.vercel.app/v3/api-docs)) · **Web repo:** [payment-gateway-starter-web](https://github.com/Mauludinegi/payment-gateway-starter-web)
+
+Sandbox demo, no real money: the demo routes payments to the Midtrans sandbox and a Xendit test key. `GET /api/environment` reports whether every gateway in use has test credentials, and the store shows its sandbox banner only when it does. What was actually tried against the gateways is listed under [Tested against the gateways](#tested-against-the-gateways).
+
 A Spring Boot backend for taking Indonesian payments (virtual accounts, QRIS, e-wallets, and retail outlets) through **Xendit** or **Midtrans**. It handles the parts that usually go wrong in production: duplicate webhooks, forged webhooks, late payments, customers who switch payment methods, and payments that expire.
 
 Customers sign in with **Google** (Firebase Authentication); sessions live in **Redis** (Upstash), and checkout, the payment page, and order history require a session. Admins manage the catalogue (product images in **Supabase Storage**, stock that is held at checkout), and customers who paid can rate what they bought.
@@ -131,15 +135,16 @@ Interactive docs are at `/swagger-ui.html` (OpenAPI JSON at `/v3/api-docs`). For
 | `GET` | `/api/products/{id}` | One active product |
 | `GET` | `/api/products/{id}/reviews?page=&size=` | Visible reviews, newest first |
 | `GET` | `/api/channels` | Channels whose gateway is configured |
+| `GET` | `/api/environment` | `{sandbox, testMode}`: `sandbox` is true only when every gateway in use has test credentials |
 | `GET` | `/api/auth/options` | Which sign-in methods are enabled |
 | `POST` | `/api/auth/google` | `{idToken}` from Firebase; returns `{token, expiresAt, user}` |
 | `POST` | `/api/auth/dev` | `{name, email}`; local runs only |
 | `GET` | `/api/auth/me` | Signed-in user (session) |
 | `DELETE` | `/api/auth/session` | Sign out; revokes the session |
-| `POST` | `/api/orders` | `{items: [{productId, quantity}], customerName?}` (session); prices come from the catalogue, the receipt email from the account |
+| `POST` | `/api/orders` | `{items: [{productId, quantity}], customerName?}` (session); prices come from the catalogue, the customer's email from the account |
 | `GET` | `/api/orders/{id}` | Order with items, its latest payment, and instructions (session) |
 | `GET` | `/api/orders/{id}/events` | Server-Sent Events: an `order` event now and on every change, until it is paid or expired (session) |
-| `POST` | `/api/orders/{id}/payments` | `{channel, mobileNumber?}` (session); `mobileNumber` (`+62…`) is required for OVO |
+| `POST` | `/api/orders/{id}/payments` | `{channel, mobileNumber?}` (session); `mobileNumber` (`+62…`) is required for OVO. Send an `Idempotency-Key` header (up to 64 letters, digits, `-`, `_`) and reuse it on retries. `201` with instructions, or `202` with `payment.confirming: true` when the gateway did not answer in time |
 | `GET` | `/api/me/orders` | The customer's 50 latest orders (session) |
 | `GET` | `/api/me/reviews/{productId}` | `{canReview, review, hidden}` for the signed-in customer (session) |
 | `PUT` | `/api/me/reviews/{productId}` | `{rating: 1-5, comment?}`; only after a paid order for it (session) |
@@ -157,7 +162,7 @@ Admin endpoints need the session of an `ADMIN` account (`401` without a session,
 | `GET` | `/api/admin/stats` | Revenue, conversion, last 7 days, payments by method, orders paid twice |
 | `GET` | `/api/admin/orders?status=&q=&page=&size=` | Search by reference, name, or email |
 | `GET` | `/api/admin/orders/{id}` | Items, every payment attempt, and its webhooks |
-| `GET` | `/api/admin/webhooks?page=&size=` | Every processed event with the confirmed status and outcome |
+| `GET` | `/api/admin/webhooks?page=&size=` | Every verified event with the confirmed status and outcome; `queued` while it waits for its payment |
 | `POST` | `/api/admin/payments/{id}/sync` | Re-check one payment with its gateway, for a missed webhook |
 | `GET` | `/api/admin/users?role=&q=&page=&size=` | Accounts with their orders and amount spent |
 | `PATCH` | `/api/admin/users/{id}/role` | `{role: CUSTOMER\|ADMIN}`; not for your own account |
@@ -169,15 +174,16 @@ Admin endpoints need the session of an `ADMIN` account (`401` without a session,
 | `GET` | `/api/admin/reviews?productId=&hidden=&page=&size=` | Reviews with the author's email |
 | `PATCH` | `/api/admin/reviews/{id}` | `{hidden: true\|false}` |
 
-Errors are returned as [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) problem details (`404`, `400`, `409` for an order that is already paid or expired, for stock that ran out, or for a product edited since you loaded it, `401` for a missing session or a webhook that fails verification, `403` for a customer on the admin API, `502` when the gateway or the image storage rejects a request).
+Errors are returned as [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) problem details (`404`, `400`, `409` for an order that is already paid or expired, for a new payment while the previous one is still being confirmed with the gateway, for stock that ran out, or for a product edited since you loaded it, `401` for a missing session or a webhook that fails verification, `403` for a customer on the admin API, `502` when the gateway or the image storage rejects a request).
 
 ## Design decisions
 
-- **Webhooks are verified, deduplicated, and re-checked.** Xendit webhooks must carry the account's `x-callback-token`; Midtrans notifications must carry a valid SHA-512 `signature_key`. Each event is stored in `webhook_events` under a unique `(provider, event_key)`, so a retried delivery is acknowledged without being applied twice. The payload is then treated only as a hint: the app asks the gateway for the payment's current status and applies that.
-- **Statuses only move forward.** A succeeded payment is never downgraded by a late `failed` or `expired` event, and a final status is never overwritten. The order becomes `PAID` exactly once, and `OrderPaidEvent` is published once, after the transaction commits (see `ReceiptNotifier` for where to send receipts or fulfil the order).
+- **Starting a payment survives double clicks and timeouts.** The order row is locked while the attempt is recorded, and the attempt is saved before the gateway is called, so its id (Xendit `reference_id`, Midtrans `order_id`) exists before any webhook can arrive. The same `Idempotency-Key` returns the first attempt instead of starting another. A timeout, connection error, or gateway 5xx does not mark the payment failed: it stays `PENDING` and "confirming", new methods are refused with `409` meanwhile, and `PaymentReconciler` (run with the expiry job) retries the create. Midtrans rejects a second charge for the same `order_id`, so the retry reads the first one back (VA and retail codes; a QR or e-wallet charge is expired instead and the customer picks again). Xendit's v3 API neither deduplicates nor looks up by `reference_id`, so a retry creates a second payment request; the first was never shown to the customer and expires unpaid. OVO is the exception (Xendit pushes it to the customer's phone), so it is never retried and is settled by its webhook or by expiry. Only a clear rejection (4xx) marks a payment failed.
+- **Webhooks are verified, deduplicated, re-checked, and never dropped.** Xendit webhooks must carry the account's `x-callback-token`; Midtrans notifications must carry a valid SHA-512 `signature_key`. Each event is stored in `webhook_events` under a unique `(provider, event_key)`, so a retried delivery is acknowledged without being applied twice; any other database error fails the request so the gateway retries. The payload is then treated only as a hint: the app asks the gateway for the payment's current status and applies that. A verified event that matches no payment yet is stored as queued and replayed on every run of the background job, for up to 3 days.
+- **Statuses only move forward.** A succeeded payment is never downgraded by a late `failed` or `expired` event, and a final status is never overwritten. The order becomes `PAID` exactly once, and `OrderPaidEvent` is published once, after the transaction commits `ReceiptNotifier` only logs it: no receipt email is sent. That listener is where to send one or fulfil the order.
 - **Late payments still count.** If a customer switches from a VA to QRIS but then pays the old VA anyway, the money arrived, so the order is marked paid.
-- **Switching methods cancels the old one.** Starting a new payment cancels any pending attempt at the gateway first (best effort), so customers don't end up with two live payment codes.
-- **Expiry is double-checked.** A scheduled job closes payments past their expiry (with a 2-minute grace period) only after confirming with the gateway that they were not paid at the last second. Orders expire after 24 hours by default; each payment after 1 hour.
+- **Switching methods cancels the old one.** Starting a new payment cancels any pending attempt at the gateway (best effort), so customers don't end up with two live payment codes.
+- **Expiry closes the payment at the gateway first.** A scheduled job takes payments past their expiry (with a 2-minute grace period), asks the gateway for the status, and if it is still open cancels it there (Xendit cancel, Midtrans expire) and checks again. Only once the gateway reports it closed is it marked expired here; if the gateway still reports it open, nothing changes and the job tries again on its next run. Orders expire, and their stock is released, only when no payment is pending. Orders expire after 24 hours by default; each payment after 1 hour. A payment that was never confirmed is closed 15 minutes after its expiry, since the gateway was given the same expiry.
 - **Concurrency.** Entities use optimistic locking (`@Version`), so a webhook and the expiry job racing on the same payment cannot both win. Requests run on virtual threads.
 - **The server prices every order.** The client sends product IDs and quantities only; names and prices are copied into `order_items`, so later catalogue edits never change a placed order.
 - **Double payments are visible.** If an old method is paid after the customer switched and paid the new one, the order stays paid once and the admin API flags it for a refund.
@@ -233,8 +239,10 @@ In the project's environment variables, set `PORT=8080` (Vercel sends traffic to
 ```
 
 - `PaymentStatusServiceTest`: status rules (paid once, no downgrades, late payments).
-- `XenditGatewayTest`, `MidtransGatewayTest`: request bodies, status mapping, and webhook verification against mocked HTTP.
+- `XenditGatewayTest`, `MidtransGatewayTest`: request bodies, status mapping, webhook verification, timeouts and 5xx treated as unknown outcomes, and Midtrans reading back a duplicate charge, against mocked HTTP.
 - `CheckoutFlowTest`: the full flow over HTTP with the simulator, including server-side pricing, duplicate and forged webhooks, and switching methods.
+- `PaymentReliabilityTest`: four simultaneous requests with one `Idempotency-Key` start one payment; a gateway timeout leaves the payment confirming (not failed) and the reconciler recovers it; a webhook for a payment whose create timed out still pays the order; a webhook for an unknown payment is queued and replayed; expiry cancels at the gateway and leaves a payment the gateway still reports open alone.
+- `WebhookServiceTest`: only a unique-key race counts as a duplicate; other database errors fail the webhook so the gateway retries.
 - `AdminApiTest`: only admins get in, role changes apply immediately and never to yourself, search and filters, orders paid twice flagged for refund, and re-checking a payment whose webhook was missed.
 - `AuthApiTest`: endpoints that need a session, customers seeing only their own orders, repeat sign-ins, and sign-out revoking the session.
 - `AuthServiceTest`: who becomes an admin on sign-in, and that nobody is demoted.
@@ -247,6 +255,28 @@ In the project's environment variables, set `PORT=8080` (Vercel sends traffic to
 - `CatalogServiceTest`: the cache is filled once, cleared after changes, and skipped when Redis fails.
 - `SupabaseImageStoreTest`: Storage requests, keys, and bucket creation against mocked HTTP.
 - `PaymentsPropertiesTest`: per-channel routing from `PAYMENTS_ROUTES`, including from a real environment variable.
+
+### Tested against the gateways
+
+Run on 10 October 2026 with a Xendit test key and the Midtrans sandbox, through this API (create the payment, then repeat the request with the same `Idempotency-Key`):
+
+| Channel | Xendit (test mode) | Midtrans (sandbox) |
+| --- | --- | --- |
+| BCA, BNI, BRI, Permata VA | Created | Created |
+| Mandiri VA | Created | Created (bill payment code) |
+| BSI VA | Created | Not offered by Midtrans |
+| Bank Sahabat Sampoerna VA | Refused: not activated on the test account | Not offered by Midtrans |
+| QRIS | Created, paid with Xendit's simulate API, order turned `PAID` | Created |
+| Alfamart | Created, paid with Xendit's simulate API, order turned `PAID` | Created |
+| Indomaret | Created | Created |
+| OVO, LinkAja | Created | Not offered by Midtrans |
+| DANA | Created (Xendit's simulate API does not support it) | Not offered by Midtrans |
+| ShopeePay | Created | Created |
+| GoPay | Not offered by Xendit | Created |
+
+BRI VA was also paid with Xendit's simulate API and turned `PAID`. Cancelling an open payment was checked on both (Xendit `CANCELED`, Midtrans `expire`), and Midtrans was checked to answer a second charge for the same `order_id` with status code `406`.
+
+Not covered: paying through the Midtrans sandbox simulator, and webhooks sent by the real gateways (in the runs above, the paid status came from the admin re-check, not a webhook). Webhook verification and handling are tested with mocked payloads and the simulator only.
 
 ## Stack
 

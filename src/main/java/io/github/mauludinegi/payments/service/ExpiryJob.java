@@ -1,6 +1,7 @@
 package io.github.mauludinegi.payments.service;
 
 import io.github.mauludinegi.payments.gateway.GatewayRegistry;
+import io.github.mauludinegi.payments.gateway.PaymentGateway;
 import io.github.mauludinegi.payments.order.Order;
 import io.github.mauludinegi.payments.order.OrderRepository;
 import io.github.mauludinegi.payments.payment.PaymentAttempt;
@@ -20,18 +21,21 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Not every gateway sends an expiry webhook (Xendit v3 does not), so pending payments past their
- * expiry are re-checked with the gateway and closed here. Orders expire once no payment is pending.
+ * expiry are closed at the gateway and then here. Orders expire (and release stock) once no payment
+ * is pending. Each run first lets {@link PaymentReconciler} settle unconfirmed payments and webhooks.
  */
 @Component
 public class ExpiryJob {
 
     private static final Logger log = LoggerFactory.getLogger(ExpiryJob.class);
     private static final Duration GRACE = Duration.ofMinutes(2);
+    private static final Duration UNCONFIRMED_GRACE = Duration.ofMinutes(15);
 
     private final PaymentAttemptRepository attempts;
     private final OrderRepository orders;
     private final GatewayRegistry gateways;
     private final PaymentStatusService statuses;
+    private final PaymentReconciler reconciler;
     private final Clock clock;
 
     private final Duration interval;
@@ -39,12 +43,13 @@ public class ExpiryJob {
     private volatile Instant lastRun = Instant.EPOCH;
 
     public ExpiryJob(PaymentAttemptRepository attempts, OrderRepository orders, GatewayRegistry gateways,
-                     PaymentStatusService statuses, Clock clock,
+                     PaymentStatusService statuses, PaymentReconciler reconciler, Clock clock,
                      @Value("${payments.expiry-check-interval:PT1M}") Duration interval) {
         this.attempts = attempts;
         this.orders = orders;
         this.gateways = gateways;
         this.statuses = statuses;
+        this.reconciler = reconciler;
         this.clock = clock;
         this.interval = interval;
     }
@@ -57,6 +62,7 @@ public class ExpiryJob {
         try {
             Instant now = clock.instant();
             lastRun = now;
+            reconciler.run();
             for (PaymentAttempt attempt : attempts.findByStatusAndExpiresAtBefore(PaymentStatus.PENDING, now.minus(GRACE))) {
                 closeAttempt(attempt);
             }
@@ -77,20 +83,40 @@ public class ExpiryJob {
         Thread.ofVirtual().name("expiry-job").start(this::run);
     }
 
+    /**
+     * Closes the payment at the gateway before closing it here, so stock is only released once the
+     * customer can no longer pay. A payment the gateway still reports open is retried next run.
+     */
     private void closeAttempt(PaymentAttempt attempt) {
-        PaymentStatus status = PaymentStatus.EXPIRED;
-        if (attempt.getProviderRef() != null) {
-            try {
-                PaymentStatus remote = gateways.get(attempt.getProvider()).fetchStatus(attempt.getProviderRef());
-                if (remote != PaymentStatus.PENDING) {
-                    status = remote;
-                }
-            } catch (RuntimeException e) {
-                log.warn("Could not re-check payment {}: {}", attempt.getId(), e.getMessage());
-                return;
+        if (attempt.getProviderRef() == null) {
+            // Never confirmed; the reconciler keeps retrying it. The gateway was given the same expiry,
+            // so well past it the payment can no longer be made there either.
+            if (attempt.getExpiresAt().isBefore(clock.instant().minus(UNCONFIRMED_GRACE))) {
+                statuses.apply(attempt.getId(), PaymentStatus.EXPIRED);
             }
+            return;
         }
-        statuses.apply(attempt.getId(), status);
+        PaymentGateway gateway = gateways.get(attempt.getProvider());
+        PaymentStatus remote;
+        try {
+            remote = gateway.fetchStatus(attempt.getProviderRef());
+            if (remote == PaymentStatus.PENDING) {
+                try {
+                    gateway.cancel(attempt.getProviderRef());
+                } catch (RuntimeException e) {
+                    log.warn("Could not cancel expired payment {} at {}: {}", attempt.getId(), attempt.getProvider(), e.getMessage());
+                }
+                remote = gateway.fetchStatus(attempt.getProviderRef());
+            }
+        } catch (RuntimeException e) {
+            log.warn("Could not re-check payment {}: {}", attempt.getId(), e.getMessage());
+            return;
+        }
+        if (remote == PaymentStatus.PENDING) {
+            log.info("Payment {} is still open at {}; trying again next run", attempt.getId(), attempt.getProvider());
+            return;
+        }
+        statuses.apply(attempt.getId(), remote == PaymentStatus.CANCELLED ? PaymentStatus.EXPIRED : remote);
     }
 
     private void expireOrders(Instant now) {

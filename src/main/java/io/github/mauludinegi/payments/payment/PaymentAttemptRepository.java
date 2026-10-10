@@ -28,6 +28,16 @@ public interface PaymentAttemptRepository extends JpaRepository<PaymentAttempt, 
 
     List<PaymentAttempt> findByOrderIdAndStatus(UUID orderId, PaymentStatus status);
 
+    Optional<PaymentAttempt> findByOrderIdAndIdempotencyKey(UUID orderId, String idempotencyKey);
+
+    /** Attempts whose create call the gateway has not confirmed (timed out, or still in flight). */
+    @Query("""
+            select a.id from PaymentAttempt a
+            where a.status = io.github.mauludinegi.payments.payment.PaymentStatus.PENDING
+              and a.providerRef is null and a.updatedAt < :before
+            """)
+    List<UUID> findUnconfirmedIds(Instant before);
+
     List<PaymentAttempt> findByStatusAndExpiresAtBefore(PaymentStatus status, Instant before);
 
     List<PaymentAttempt> findByOrderIdOrderByCreatedAtDesc(UUID orderId);

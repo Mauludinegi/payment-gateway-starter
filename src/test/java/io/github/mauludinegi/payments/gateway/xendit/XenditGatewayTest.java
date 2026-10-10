@@ -3,6 +3,7 @@ package io.github.mauludinegi.payments.gateway.xendit;
 import io.github.mauludinegi.payments.config.PaymentsProperties;
 import io.github.mauludinegi.payments.gateway.GatewayException;
 import io.github.mauludinegi.payments.gateway.GatewayPayment;
+import io.github.mauludinegi.payments.gateway.GatewayUnavailableException;
 import io.github.mauludinegi.payments.gateway.InvalidWebhookException;
 import io.github.mauludinegi.payments.gateway.PaymentRequest;
 import io.github.mauludinegi.payments.gateway.WebhookNotification;
@@ -103,7 +104,26 @@ class XenditGatewayTest {
 
         assertThatThrownBy(() -> gateway.create(request(UUID.randomUUID(), Channel.BRI_VA, null)))
                 .isInstanceOf(GatewayException.class)
+                .isNotInstanceOf(GatewayUnavailableException.class)
                 .hasMessageContaining("CHANNEL_NOT_ACTIVATED");
+    }
+
+    @Test
+    void timeoutsAndServerErrorsLeaveTheOutcomeUnknown() {
+        server.expect(requestTo("https://api.xendit.test/v3/payment_requests"))
+                .andRespond(withStatus(HttpStatus.SERVICE_UNAVAILABLE));
+        assertThatThrownBy(() -> gateway.create(request(UUID.randomUUID(), Channel.BRI_VA, null)))
+                .isInstanceOf(GatewayUnavailableException.class);
+
+        server.reset();
+        server.expect(requestTo("https://api.xendit.test/v3/payment_requests"))
+                .andRespond(request -> { throw new java.net.SocketTimeoutException("Read timed out"); });
+        assertThatThrownBy(() -> gateway.create(request(UUID.randomUUID(), Channel.BRI_VA, null)))
+                .isInstanceOf(GatewayUnavailableException.class);
+
+        // A retry makes a second payment request; only OVO would push that one to the customer's phone too.
+        assertThat(gateway.canRetryCreate(Channel.BRI_VA)).isTrue();
+        assertThat(gateway.canRetryCreate(Channel.OVO)).isFalse();
     }
 
     @Test

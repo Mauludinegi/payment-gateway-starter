@@ -56,17 +56,27 @@ public class PaymentAttempt {
     @Column(nullable = false)
     private Instant updatedAt;
 
+    private String idempotencyKey;
+
+    private String mobileNumber;
+
+    /** Why the gateway's answer is still unknown, while the attempt waits for reconciliation. */
+    private String gatewayError;
+
     @Version
     private Long version;
 
     protected PaymentAttempt() {
     }
 
-    public PaymentAttempt(Order order, Provider provider, Channel channel, Instant now, Instant expiresAt) {
+    public PaymentAttempt(Order order, Provider provider, Channel channel, String mobileNumber, String idempotencyKey,
+                          Instant now, Instant expiresAt) {
         this.id = UUID.randomUUID();
         this.order = order;
         this.provider = provider;
         this.channel = channel;
+        this.mobileNumber = mobileNumber;
+        this.idempotencyKey = idempotencyKey;
         this.status = PaymentStatus.PENDING;
         this.createdAt = now;
         this.updatedAt = now;
@@ -80,7 +90,27 @@ public class PaymentAttempt {
         if (expiresAt != null) {
             this.expiresAt = expiresAt;
         }
+        this.gatewayError = null;
         this.updatedAt = now;
+    }
+
+    /** A webhook arrived before our create call returned; its gateway id is enough for status checks. */
+    public void adoptProviderRef(String providerRef, Instant now) {
+        if (this.providerRef == null) {
+            this.providerRef = providerRef;
+            this.updatedAt = now;
+        }
+    }
+
+    /** The create call timed out or hit a gateway error, so the payment may or may not exist there. */
+    public void recordUnconfirmed(String error, Instant now) {
+        this.gatewayError = error == null ? null : error.length() > 500 ? error.substring(0, 500) : error;
+        this.updatedAt = now;
+    }
+
+    /** Pending, but the gateway has not confirmed creating it yet; no instruction to show. */
+    public boolean isUnconfirmed() {
+        return status == PaymentStatus.PENDING && providerRef == null;
     }
 
     public void changeStatus(PaymentStatus next, Instant now) {
@@ -101,4 +131,7 @@ public class PaymentAttempt {
     public Instant getExpiresAt() { return expiresAt; }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }
+    public String getIdempotencyKey() { return idempotencyKey; }
+    public String getMobileNumber() { return mobileNumber; }
+    public String getGatewayError() { return gatewayError; }
 }

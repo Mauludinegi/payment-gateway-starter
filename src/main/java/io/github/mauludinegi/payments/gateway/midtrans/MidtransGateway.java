@@ -3,6 +3,7 @@ package io.github.mauludinegi.payments.gateway.midtrans;
 import io.github.mauludinegi.payments.config.PaymentsProperties;
 import io.github.mauludinegi.payments.gateway.GatewayException;
 import io.github.mauludinegi.payments.gateway.GatewayPayment;
+import io.github.mauludinegi.payments.gateway.GatewayUnavailableException;
 import io.github.mauludinegi.payments.gateway.InvalidWebhookException;
 import io.github.mauludinegi.payments.gateway.PaymentGateway;
 import io.github.mauludinegi.payments.gateway.PaymentRequest;
@@ -43,6 +44,9 @@ public class MidtransGateway implements PaymentGateway {
     private static final Set<Channel> CHANNELS = EnumSet.of(
             Channel.BCA_VA, Channel.BNI_VA, Channel.BRI_VA, Channel.PERMATA_VA, Channel.MANDIRI_VA,
             Channel.QRIS, Channel.GOPAY, Channel.SHOPEEPAY, Channel.INDOMARET, Channel.ALFAMART);
+
+    /** Midtrans answers a charge for an order_id it already has with this code. */
+    private static final String DUPLICATE_ORDER_ID = "406";
 
     private static final ZoneId JAKARTA = ZoneId.of("Asia/Jakarta");
     private static final DateTimeFormatter MIDTRANS_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
@@ -111,16 +115,48 @@ public class MidtransGateway implements PaymentGateway {
             default -> throw new IllegalArgumentException(request.channel().label() + " is not supported by Midtrans");
         }
 
-        JsonNode response = call(() -> http.post().uri("/v2/charge")
-                .contentType(MediaType.APPLICATION_JSON)
-                .body(body)
-                .retrieve()
-                .body(JsonNode.class));
+        JsonNode response;
+        try {
+            response = call(() -> http.post().uri("/v2/charge")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(body)
+                    .retrieve()
+                    .body(JsonNode.class));
+        } catch (GatewayException e) {
+            if (e.getCause() instanceof RestClientResponseException r && r.getStatusCode().value() == 406) {
+                return recover(request);
+            }
+            throw e;
+        }
         String statusCode = response.path("status_code").asString("");
+        if (DUPLICATE_ORDER_ID.equals(statusCode)) {
+            return recover(request);
+        }
+        if (statusCode.startsWith("5")) {
+            throw new GatewayUnavailableException("Midtrans returned " + statusCode + ": " + response.path("status_message").asString());
+        }
         if (!statusCode.startsWith("2")) {
             throw new GatewayException("Midtrans returned " + statusCode + ": " + response.path("status_message").asString());
         }
         return new GatewayPayment(request.attemptId().toString(), instruction(response), parseTime(response.path("expiry_time").asString(null)));
+    }
+
+    /**
+     * A retried charge whose first try did reach Midtrans: the attempt id is the Midtrans order id, so the
+     * existing transaction is read back. QR and e-wallet links are not in the status response; those are
+     * expired instead, and the customer picks a method again.
+     */
+    private GatewayPayment recover(PaymentRequest request) {
+        String orderId = request.attemptId().toString();
+        JsonNode status = call(() -> http.get().uri("/v2/{orderId}/status", orderId)
+                .retrieve()
+                .body(JsonNode.class));
+        try {
+            return new GatewayPayment(orderId, instruction(status), parseTime(status.path("expiry_time").asString(null)));
+        } catch (GatewayException e) {
+            cancel(orderId);
+            throw new GatewayException("Midtrans created the payment but its instructions could not be recovered; choose a method again");
+        }
     }
 
     @Override
@@ -224,9 +260,13 @@ public class MidtransGateway implements PaymentGateway {
         try {
             return request.get();
         } catch (RestClientResponseException e) {
-            throw new GatewayException("Midtrans returned " + e.getStatusCode().value() + ": " + e.getResponseBodyAsString(), e);
+            String message = "Midtrans returned " + e.getStatusCode().value() + ": " + e.getResponseBodyAsString();
+            if (e.getStatusCode().is5xxServerError() || e.getStatusCode().value() == 408 || e.getStatusCode().value() == 429) {
+                throw new GatewayUnavailableException(message, e);
+            }
+            throw new GatewayException(message, e);
         } catch (RestClientException e) {
-            throw new GatewayException("Midtrans is unreachable", e);
+            throw new GatewayUnavailableException("Midtrans did not answer: " + e.getMessage(), e);
         }
     }
 

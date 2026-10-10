@@ -53,4 +53,19 @@ class PaymentsPropertiesTest {
     private static PaymentsProperties properties(Map<Channel, Provider> routing, String routes) {
         return new PaymentsProperties(Provider.MIDTRANS, routing, null, null, null, null, null, null, routes);
     }
+
+    @Test
+    void knowsWhichCredentialsAreTestOnes() {
+        PaymentsProperties test = new PaymentsProperties(null, null, null, null, null,
+                new PaymentsProperties.Xendit("xnd_development_abc", null, null), new PaymentsProperties.Midtrans("Mid-server-x", null), null, null);
+        assertThat(test.isTestMode(Provider.SIMULATOR)).isTrue();
+        assertThat(test.isTestMode(Provider.XENDIT)).isTrue();
+        assertThat(test.isTestMode(Provider.MIDTRANS)).isTrue();
+
+        PaymentsProperties live = new PaymentsProperties(null, null, null, null, null,
+                new PaymentsProperties.Xendit("xnd_production_abc", null, null),
+                new PaymentsProperties.Midtrans("Mid-server-x", "https://api.midtrans.com"), null, null);
+        assertThat(live.isTestMode(Provider.XENDIT)).isFalse();
+        assertThat(live.isTestMode(Provider.MIDTRANS)).isFalse();
+    }
 }

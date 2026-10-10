@@ -6,6 +6,7 @@ import io.github.mauludinegi.payments.config.PaymentsProperties;
 import io.github.mauludinegi.payments.gateway.GatewayException;
 import io.github.mauludinegi.payments.gateway.GatewayPayment;
 import io.github.mauludinegi.payments.gateway.GatewayRegistry;
+import io.github.mauludinegi.payments.gateway.GatewayUnavailableException;
 import io.github.mauludinegi.payments.gateway.PaymentGateway;
 import io.github.mauludinegi.payments.gateway.PaymentRequest;
 import io.github.mauludinegi.payments.order.Order;
@@ -21,9 +22,11 @@ import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.security.SecureRandom;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
@@ -44,6 +47,8 @@ public class CheckoutService {
     private static final int MAX_QUANTITY = 10;
     private static final long MIN_AMOUNT = 1_000;
     private static final long MAX_AMOUNT = 100_000_000;
+    /** A repeated request (same key) retries an unconfirmed create only once the first try has had time to finish. */
+    private static final Duration RETRY_CONFIRM_AFTER = Duration.ofSeconds(30);
 
     private final OrderRepository orders;
     private final OrderItemRepository items;
@@ -54,12 +59,14 @@ public class CheckoutService {
     private final PaymentsProperties properties;
     private final ApplicationEventPublisher events;
     private final StockService stock;
+    private final TransactionTemplate tx;
     private final Clock clock;
 
     public CheckoutService(OrderRepository orders, OrderItemRepository items, ProductRepository products,
                            PaymentAttemptRepository attempts, GatewayRegistry gateways,
                            PaymentStatusService statuses, PaymentsProperties properties,
-                           ApplicationEventPublisher events, StockService stock, Clock clock) {
+                           ApplicationEventPublisher events, StockService stock, TransactionTemplate tx,
+                           Clock clock) {
         this.orders = orders;
         this.items = items;
         this.products = products;
@@ -69,6 +76,7 @@ public class CheckoutService {
         this.properties = properties;
         this.events = events;
         this.stock = stock;
+        this.tx = tx;
         this.clock = clock;
     }
 
@@ -119,36 +127,92 @@ public class CheckoutService {
     }
 
     /**
-     * Starts (or switches to) a payment method. Pending attempts are cancelled first so the customer
-     * cannot pay twice; if a cancelled one is paid anyway, the webhook still marks the order paid.
-     * No transaction is held open while the gateway is called.
+     * Starts (or switches to) a payment method. The order row is locked while the new attempt is
+     * recorded, so two clicks cannot both start one; the same {@code idempotencyKey} returns the
+     * first attempt instead. Older pending attempts are cancelled so the customer cannot pay twice;
+     * if a cancelled one is paid anyway, the webhook still marks the order paid. No transaction is
+     * held open while the gateway is called.
      */
-    public OrderView startPayment(UUID orderId, UUID userId, Channel channel, String mobileNumber) {
-        Order order = orders.findById(orderId)
+    public OrderView startPayment(UUID orderId, UUID userId, Channel channel, String mobileNumber, String idempotencyKey) {
+        PaymentGateway gateway = gateways.forChannel(channel);
+        Reservation reservation = tx.execute(status -> reserve(orderId, userId, gateway, channel, mobileNumber, idempotencyKey));
+        if (!reservation.isNew()) {
+            PaymentAttempt previous = attempts.findById(reservation.attemptId()).orElseThrow();
+            if (previous.isUnconfirmed() && previous.getUpdatedAt().isBefore(clock.instant().minus(RETRY_CONFIRM_AFTER))) {
+                confirmAtGateway(previous.getId(), true);
+            }
+            return view(orderId);
+        }
+        cancelAtGateway(reservation.superseded());
+        confirmAtGateway(reservation.attemptId(), false);
+        return view(orderId);
+    }
+
+    private record Reservation(UUID attemptId, List<UUID> superseded, boolean isNew) {
+    }
+
+    private Reservation reserve(UUID orderId, UUID userId, PaymentGateway gateway, Channel channel, String mobileNumber,
+                                String idempotencyKey) {
+        Order order = orders.findForUpdate(orderId)
                 .filter(o -> userId.equals(o.getUserId()))
                 .orElseThrow(() -> new NotFoundException("Order " + orderId + " not found"));
+        if (idempotencyKey != null) {
+            Optional<PaymentAttempt> previous = attempts.findByOrderIdAndIdempotencyKey(orderId, idempotencyKey);
+            if (previous.isPresent()) {
+                if (previous.get().getChannel() != channel) {
+                    throw new IllegalArgumentException("This Idempotency-Key was already used for " + previous.get().getChannel());
+                }
+                return new Reservation(previous.get().getId(), List.of(), false);
+            }
+        }
         if (!order.isPayable()) {
             throw new IllegalStateException("Order " + order.getReference() + " is " + order.getStatus());
         }
-        PaymentGateway gateway = gateways.forChannel(channel);
-        cancelPending(order);
-
+        List<PaymentAttempt> pending = attempts.findByOrderIdAndStatus(orderId, PaymentStatus.PENDING);
+        if (pending.stream().anyMatch(PaymentAttempt::isUnconfirmed)) {
+            throw new PaymentInProgressException("The previous payment is still being confirmed with the gateway; try again in a moment");
+        }
         Instant now = clock.instant();
         Instant expiresAt = min(now.plus(properties.paymentTtl()), order.getExpiresAt());
-        PaymentAttempt attempt = attempts.save(new PaymentAttempt(order, gateway.provider(), channel, now, expiresAt));
+        PaymentAttempt attempt = attempts.save(new PaymentAttempt(order, gateway.provider(), channel, mobileNumber,
+                idempotencyKey, now, expiresAt));
+        return new Reservation(attempt.getId(), pending.stream().map(PaymentAttempt::getId).toList(), true);
+    }
 
+    /**
+     * Creates the attempt's payment at the gateway. A timeout or gateway outage leaves the attempt
+     * unconfirmed for {@link PaymentReconciler}; only a clear rejection marks it failed. A
+     * {@code retry} gets back the payment made the first time where the gateway allows it (the
+     * attempt id is the Midtrans order id), and is skipped where a second one could be paid too.
+     */
+    public void confirmAtGateway(UUID attemptId, boolean retry) {
+        PaymentAttempt attempt = attempts.findWithOrder(attemptId).orElseThrow();
+        if (!attempt.isUnconfirmed()) {
+            return;
+        }
+        PaymentGateway gateway = gateways.get(attempt.getProvider());
+        if (retry && !gateway.canRetryCreate(attempt.getChannel())) {
+            return;
+        }
+        Order order = attempt.getOrder();
         GatewayPayment payment;
         try {
-            payment = gateway.create(new PaymentRequest(attempt.getId(), order.getId(), order.getReference(), order.getDescription(),
-                    order.getAmount(), order.getCustomerName(), mobileNumber, channel, expiresAt));
+            payment = gateway.create(new PaymentRequest(attempt.getId(), order.getId(),
+                    order.getReference(), order.getDescription(), order.getAmount(), order.getCustomerName(),
+                    attempt.getMobileNumber(), attempt.getChannel(), attempt.getExpiresAt()));
+        } catch (GatewayUnavailableException e) {
+            log.warn("Payment {} not confirmed by {}, will retry: {}", attemptId, attempt.getProvider(), e.getMessage());
+            tx.executeWithoutResult(status -> attempts.findById(attemptId)
+                    .ifPresent(a -> a.recordUnconfirmed(e.getMessage(), clock.instant())));
+            events.publishEvent(new OrderChangedEvent(order.getId()));
+            return;
         } catch (GatewayException | IllegalArgumentException e) {
-            statuses.apply(attempt.getId(), PaymentStatus.FAILED);
+            statuses.apply(attemptId, PaymentStatus.FAILED);
             throw e;
         }
-        attempt.attachGatewayPayment(payment.providerRef(), payment.instruction(), payment.expiresAt(), clock.instant());
-        attempts.save(attempt);
-        events.publishEvent(new OrderChangedEvent(orderId));
-        return view(orderId);
+        tx.executeWithoutResult(status -> attempts.findById(attemptId).ifPresent(a ->
+                a.attachGatewayPayment(payment.providerRef(), payment.instruction(), payment.expiresAt(), clock.instant())));
+        events.publishEvent(new OrderChangedEvent(order.getId()));
     }
 
     public OrderView view(UUID orderId) {
@@ -186,8 +250,9 @@ public class CheckoutService {
     public record OrderView(Order order, PaymentAttempt payment, List<OrderItem> items) {
     }
 
-    private void cancelPending(Order order) {
-        for (PaymentAttempt pending : attempts.findByOrderIdAndStatus(order.getId(), PaymentStatus.PENDING)) {
+    private void cancelAtGateway(List<UUID> attemptIds) {
+        for (UUID id : attemptIds) {
+            PaymentAttempt pending = attempts.findById(id).orElseThrow();
             if (pending.getProviderRef() != null) {
                 try {
                     gateways.get(pending.getProvider()).cancel(pending.getProviderRef());

@@ -132,6 +132,14 @@ class CheckoutFlowTest {
     }
 
     @Test
+    void reportsSandboxWhenOnlyTheSimulatorTakesPayments() throws Exception {
+        mvc.perform(get("/api/environment"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.sandbox").value(true))
+                .andExpect(jsonPath("$.testMode.SIMULATOR").value(true));
+    }
+
+    @Test
     void pricesComeFromTheCatalogue() throws Exception {
         // Unknown fields such as a client-sent amount are ignored; duplicate lines are merged.
         mvc.perform(post("/api/orders").contentType(MediaType.APPLICATION_JSON).content("""

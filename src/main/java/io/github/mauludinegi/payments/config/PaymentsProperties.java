@@ -67,6 +67,19 @@ public record PaymentsProperties(
         return routing.getOrDefault(channel, defaultProvider);
     }
 
+    /**
+     * Whether payments through this provider can move real money. Xendit test keys start with
+     * {@code xnd_development_}; Midtrans is test mode on its sandbox host whatever the key, because a
+     * production key is rejected there.
+     */
+    public boolean isTestMode(Provider provider) {
+        return switch (provider) {
+            case SIMULATOR -> true;
+            case XENDIT -> xendit.secretKey() != null && xendit.secretKey().startsWith("xnd_development_");
+            case MIDTRANS -> midtrans.baseUrl().contains("sandbox");
+        };
+    }
+
     public record Xendit(String secretKey, String callbackToken, String baseUrl) {
         public Xendit {
             baseUrl = baseUrl == null || baseUrl.isBlank() ? "https://api.xendit.co" : baseUrl;

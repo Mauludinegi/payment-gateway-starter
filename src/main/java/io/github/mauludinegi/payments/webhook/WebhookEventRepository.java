@@ -12,4 +12,6 @@ public interface WebhookEventRepository extends JpaRepository<WebhookEvent, Long
     boolean existsByProviderAndEventKey(Provider provider, String eventKey);
 
     List<WebhookEvent> findByAttemptIdInOrderByIdDesc(Collection<UUID> attemptIds);
+
+    List<WebhookEvent> findTop100ByReplayPendingTrueOrderByReceivedAt();
 }

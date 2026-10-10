@@ -11,6 +11,8 @@ import io.github.mauludinegi.payments.order.Order;
 import io.github.mauludinegi.payments.order.OrderItem;
 import io.github.mauludinegi.payments.payment.Channel;
 import io.github.mauludinegi.payments.payment.PaymentAttempt;
+import io.github.mauludinegi.payments.payment.Provider;
+import io.github.mauludinegi.payments.config.PaymentsProperties;
 import io.github.mauludinegi.payments.service.CheckoutService;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
@@ -23,37 +25,45 @@ import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestAttribute;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.time.Instant;
+import java.util.EnumMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @RestController
 @RequestMapping("/api")
 public class OrderController {
 
+    private static final java.util.regex.Pattern IDEMPOTENCY_KEY = java.util.regex.Pattern.compile("^[A-Za-z0-9_-]{1,64}$");
+
     private final CheckoutService checkout;
     private final GatewayRegistry gateways;
     private final CatalogService catalog;
     private final AuthService auth;
     private final OrderEventHub events;
+    private final PaymentsProperties properties;
 
     public OrderController(CheckoutService checkout, GatewayRegistry gateways, CatalogService catalog, AuthService auth,
-                           OrderEventHub events) {
+                           OrderEventHub events, PaymentsProperties properties) {
         this.checkout = checkout;
         this.gateways = gateways;
         this.catalog = catalog;
         this.auth = auth;
         this.events = events;
+        this.properties = properties;
     }
 
     /** The receipt goes to the account's email; the name defaults to the account's but can be changed. */
@@ -90,6 +100,19 @@ public class OrderController {
                 .toList();
     }
 
+    public record Environment(boolean sandbox, Map<Provider, Boolean> testMode) {
+    }
+
+    /** {@code sandbox} is true only when every provider taking payments uses test credentials. */
+    @GetMapping("/environment")
+    public Environment environment() {
+        Map<Provider, Boolean> testMode = new EnumMap<>(Provider.class);
+        for (Provider provider : gateways.availableChannels().values()) {
+            testMode.put(provider, properties.isTestMode(provider));
+        }
+        return new Environment(testMode.values().stream().allMatch(Boolean::booleanValue), testMode);
+    }
+
     @PostMapping("/orders")
     @ResponseStatus(HttpStatus.CREATED)
     public OrderResponse create(@RequestAttribute(UserAuth.USER_ID) UUID userId, @Valid @RequestBody CreateOrder body) {
@@ -115,11 +138,21 @@ public class OrderController {
         return events.subscribe(id, userId);
     }
 
+    /**
+     * Send the same {@code Idempotency-Key} when retrying a click or a timed-out request: it returns the
+     * payment the first request started instead of starting another. 202 means the gateway has not
+     * confirmed the payment yet; poll the order until {@code payment.confirming} is false.
+     */
     @PostMapping("/orders/{id}/payments")
-    @ResponseStatus(HttpStatus.CREATED)
-    public OrderResponse pay(@RequestAttribute(UserAuth.USER_ID) UUID userId, @PathVariable UUID id,
-                             @Valid @RequestBody StartPayment body) {
-        return OrderResponse.of(checkout.startPayment(id, userId, body.channel(), body.mobileNumber()));
+    public ResponseEntity<OrderResponse> pay(@RequestAttribute(UserAuth.USER_ID) UUID userId, @PathVariable UUID id,
+                                             @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
+                                             @Valid @RequestBody StartPayment body) {
+        if (idempotencyKey != null && !IDEMPOTENCY_KEY.matcher(idempotencyKey).matches()) {
+            throw new IllegalArgumentException("Idempotency-Key must be 1 to 64 letters, digits, '-' or '_'");
+        }
+        OrderResponse order = OrderResponse.of(checkout.startPayment(id, userId, body.channel(), body.mobileNumber(), idempotencyKey));
+        boolean confirming = order.payment() != null && order.payment().confirming();
+        return ResponseEntity.status(confirming ? HttpStatus.ACCEPTED : HttpStatus.CREATED).body(order);
     }
 
     @GetMapping("/me/orders")
@@ -149,14 +182,14 @@ public class OrderController {
 
     public record PaymentResponse(
             UUID id, String provider, Channel channel, String channelLabel, Channel.Kind kind, String status,
-            String instructionType, String instructionValue, Instant createdAt, Instant expiresAt) {
+            String instructionType, String instructionValue, boolean confirming, Instant createdAt, Instant expiresAt) {
 
         static PaymentResponse of(PaymentAttempt a) {
             var instruction = a.instruction();
             return new PaymentResponse(a.getId(), a.getProvider().name(), a.getChannel(), a.getChannel().label(),
                     a.getChannel().kind(), a.getStatus().name(),
                     instruction == null ? null : instruction.type().name(), instruction == null ? null : instruction.value(),
-                    a.getCreatedAt(), a.getExpiresAt());
+                    a.isUnconfirmed(), a.getCreatedAt(), a.getExpiresAt());
         }
     }
 }

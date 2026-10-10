@@ -44,7 +44,7 @@ class PaymentStatusServiceTest {
     }
 
     private PaymentAttempt attempt(PaymentStatus status) {
-        PaymentAttempt attempt = new PaymentAttempt(order, Provider.SIMULATOR, Channel.BRI_VA, NOW, NOW.plus(Duration.ofHours(1)));
+        PaymentAttempt attempt = new PaymentAttempt(order, Provider.SIMULATOR, Channel.BRI_VA, null, null, NOW, NOW.plus(Duration.ofHours(1)));
         attempt.changeStatus(status, NOW);
         when(attempts.findWithOrder(attempt.getId())).thenReturn(Optional.of(attempt));
         return attempt;

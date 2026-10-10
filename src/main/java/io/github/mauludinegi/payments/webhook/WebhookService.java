@@ -15,19 +15,25 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 
 /**
  * Webhook handling in four steps: verify the sender, skip events already processed, re-check the
  * status with the gateway (the payload alone is never trusted), then apply it in one transaction.
+ * A verified event that matches no payment yet is stored and replayed, never dropped.
  */
 @Service
 public class WebhookService {
 
     private static final Logger log = LoggerFactory.getLogger(WebhookService.class);
 
-    public enum Result { PROCESSED, DUPLICATE, UNKNOWN_PAYMENT }
+    /** How long an unmatched event keeps being replayed before it is given up on. */
+    static final Duration REPLAY_WINDOW = Duration.ofDays(3);
+
+    public enum Result { PROCESSED, DUPLICATE, QUEUED }
 
     private final GatewayRegistry gateways;
     private final PaymentAttemptRepository attempts;
@@ -53,29 +59,93 @@ public class WebhookService {
         if (events.existsByProviderAndEventKey(provider, notification.eventKey())) {
             return Result.DUPLICATE;
         }
-        Optional<PaymentAttempt> found = Optional.ofNullable(notification.attemptId())
-                .flatMap(attempts::findWithOrder)
-                .or(() -> attempts.findWithOrderByProviderRef(provider, notification.providerRef()))
-                .filter(a -> a.getProvider() == provider);
+        Optional<PaymentAttempt> found = match(provider, notification.attemptId(), notification.providerRef());
         if (found.isEmpty()) {
-            log.warn("{} webhook for unknown payment {}", provider, notification.providerRef());
-            return Result.UNKNOWN_PAYMENT;
+            return queue(provider, notification);
         }
-        PaymentAttempt attempt = found.get();
-        String providerRef = attempt.getProviderRef() != null ? attempt.getProviderRef() : notification.providerRef();
-        PaymentStatus confirmed = gateway.fetchStatus(providerRef);
+        return process(gateway, provider, notification.eventKey(), found.get(), notification.providerRef(), null);
+    }
 
+    /** Applies stored events whose payment can now be found. Returns how many were applied. */
+    public int replayQueued() {
+        int applied = 0;
+        for (WebhookEvent queued : events.findTop100ByReplayPendingTrueOrderByReceivedAt()) {
+            try {
+                if (replay(queued)) {
+                    applied++;
+                }
+            } catch (RuntimeException e) {
+                log.warn("Replaying {} webhook {} failed, retrying later: {}", queued.getProvider(), queued.getEventKey(), e.getMessage());
+            }
+        }
+        return applied;
+    }
+
+    private boolean replay(WebhookEvent queued) {
+        Provider provider = queued.getProvider();
+        Optional<PaymentAttempt> found = match(provider, queued.getAttemptHint(), queued.getProviderRef());
+        if (found.isEmpty()) {
+            if (queued.getReceivedAt().isBefore(clock.instant().minus(REPLAY_WINDOW))) {
+                tx.executeWithoutResult(s -> events.findById(queued.getId()).ifPresent(WebhookEvent::abandon));
+                log.warn("Gave up on {} webhook {}: no payment {} after {}", provider, queued.getEventKey(), queued.getProviderRef(), REPLAY_WINDOW);
+            }
+            return false;
+        }
+        return process(gateways.get(provider), provider, queued.getEventKey(), found.get(), queued.getProviderRef(), queued.getId())
+                == Result.PROCESSED;
+    }
+
+    private Optional<PaymentAttempt> match(Provider provider, UUID attemptId, String providerRef) {
+        return Optional.ofNullable(attemptId)
+                .flatMap(attempts::findWithOrder)
+                .or(() -> providerRef == null ? Optional.empty() : attempts.findWithOrderByProviderRef(provider, providerRef))
+                .filter(a -> a.getProvider() == provider);
+    }
+
+    private Result process(PaymentGateway gateway, Provider provider, String eventKey, PaymentAttempt attempt,
+                           String payloadRef, Long queuedEventId) {
+        String providerRef = attempt.getProviderRef() != null ? attempt.getProviderRef() : payloadRef;
+        PaymentStatus confirmed = gateway.fetchStatus(providerRef);
         try {
             return tx.execute(status -> {
-                WebhookEvent event = events.saveAndFlush(
-                        new WebhookEvent(provider, notification.eventKey(), clock.instant(), attempt.getId(), confirmed));
+                WebhookEvent event;
+                if (queuedEventId == null) {
+                    event = events.saveAndFlush(new WebhookEvent(provider, eventKey, clock.instant(), attempt.getId(), confirmed));
+                } else {
+                    event = events.findById(queuedEventId).orElseThrow();
+                    if (!event.isReplayPending()) {
+                        return Result.DUPLICATE;
+                    }
+                    event.matched(attempt.getId(), confirmed);
+                }
+                // The webhook can beat our own create call; keep the gateway's id so later checks can use it.
+                attempts.findById(attempt.getId())
+                        .filter(a -> a.getProviderRef() == null && providerRef != null && confirmed.isFinal())
+                        .ifPresent(a -> a.adoptProviderRef(providerRef, clock.instant()));
                 PaymentStatusService.Outcome outcome = statuses.apply(attempt.getId(), confirmed);
                 event.recordOutcome(outcome);
-                log.info("{} webhook {}: payment {} -> {} ({})", provider, notification.eventKey(), attempt.getId(), confirmed, outcome);
+                log.info("{} webhook {}: payment {} -> {} ({})", provider, eventKey, attempt.getId(), confirmed, outcome);
                 return Result.PROCESSED;
             });
         } catch (DataIntegrityViolationException e) {
-            return Result.DUPLICATE;
+            if (events.existsByProviderAndEventKey(provider, eventKey)) {
+                return Result.DUPLICATE;
+            }
+            throw e;
         }
+    }
+
+    private Result queue(Provider provider, WebhookNotification notification) {
+        try {
+            tx.executeWithoutResult(status -> events.saveAndFlush(WebhookEvent.queued(provider, notification.eventKey(),
+                    clock.instant(), notification.providerRef(), notification.attemptId())));
+        } catch (DataIntegrityViolationException e) {
+            if (events.existsByProviderAndEventKey(provider, notification.eventKey())) {
+                return Result.DUPLICATE;
+            }
+            throw e;
+        }
+        log.warn("{} webhook {} matches no payment yet ({}); stored for replay", provider, notification.eventKey(), notification.providerRef());
+        return Result.QUEUED;
     }
 }

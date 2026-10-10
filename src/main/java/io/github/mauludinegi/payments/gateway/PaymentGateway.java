@@ -16,7 +16,20 @@ public interface PaymentGateway {
 
     Set<Channel> channels();
 
+    /**
+     * Creates the payment for {@code request.attemptId()}. Throw {@link GatewayUnavailableException}
+     * when the outcome is unknown (timeout, 5xx), {@link GatewayException} when it was refused.
+     */
     GatewayPayment create(PaymentRequest request);
+
+    /**
+     * Whether {@link #create} may be called again for an attempt whose first call had an unknown
+     * outcome. True when a repeat returns the same payment, or when a duplicate is harmless because
+     * the customer can only pay what they were shown.
+     */
+    default boolean canRetryCreate(Channel channel) {
+        return true;
+    }
 
     /** Asks the gateway for the current status. Webhooks are only trusted after this re-check. */
     PaymentStatus fetchStatus(String providerRef);

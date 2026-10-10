@@ -43,6 +43,14 @@ public class WebhookEvent {
     @Enumerated(EnumType.STRING)
     private PaymentStatusService.Outcome outcome;
 
+    private String providerRef;
+
+    /** Our attempt id as the gateway echoed it, before it was matched to a payment. */
+    private UUID attemptHint;
+
+    /** Matched no payment when it arrived; replayed until it does. */
+    private boolean replayPending;
+
     protected WebhookEvent() {
     }
 
@@ -54,8 +62,28 @@ public class WebhookEvent {
         this.confirmedStatus = confirmedStatus;
     }
 
+    /** A verified event for a payment we cannot find yet, e.g. one whose create call has not returned. */
+    public static WebhookEvent queued(Provider provider, String eventKey, Instant receivedAt, String providerRef, UUID attemptHint) {
+        WebhookEvent event = new WebhookEvent(provider, eventKey, receivedAt, null, null);
+        event.providerRef = providerRef;
+        event.attemptHint = attemptHint;
+        event.replayPending = true;
+        return event;
+    }
+
     public void recordOutcome(PaymentStatusService.Outcome outcome) {
         this.outcome = outcome;
+    }
+
+    public void matched(UUID attemptId, PaymentStatus confirmedStatus) {
+        this.attemptId = attemptId;
+        this.confirmedStatus = confirmedStatus;
+        this.replayPending = false;
+    }
+
+    /** Gives up on an event that never matched a payment of ours. */
+    public void abandon() {
+        this.replayPending = false;
     }
 
     public Long getId() { return id; }
@@ -65,4 +93,7 @@ public class WebhookEvent {
     public UUID getAttemptId() { return attemptId; }
     public PaymentStatus getConfirmedStatus() { return confirmedStatus; }
     public PaymentStatusService.Outcome getOutcome() { return outcome; }
+    public String getProviderRef() { return providerRef; }
+    public UUID getAttemptHint() { return attemptHint; }
+    public boolean isReplayPending() { return replayPending; }
 }

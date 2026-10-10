@@ -3,6 +3,7 @@ package io.github.mauludinegi.payments.gateway.midtrans;
 import io.github.mauludinegi.payments.config.PaymentsProperties;
 import io.github.mauludinegi.payments.gateway.GatewayException;
 import io.github.mauludinegi.payments.gateway.GatewayPayment;
+import io.github.mauludinegi.payments.gateway.GatewayUnavailableException;
 import io.github.mauludinegi.payments.gateway.InvalidWebhookException;
 import io.github.mauludinegi.payments.gateway.PaymentRequest;
 import io.github.mauludinegi.payments.gateway.WebhookNotification;
@@ -28,6 +29,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.jsonPath;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
+import static org.springframework.test.web.client.response.MockRestResponseCreators.withServerError;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
 class MidtransGatewayTest {
@@ -88,6 +90,39 @@ class MidtransGatewayTest {
         assertThatThrownBy(() -> gateway.create(request(UUID.randomUUID(), Channel.BRI_VA)))
                 .isInstanceOf(GatewayException.class)
                 .hasMessageContaining("not activated");
+    }
+
+    @Test
+    void retriedChargeRecoversThePaymentMidtransAlreadyHas() {
+        UUID attemptId = UUID.randomUUID();
+        server.expect(requestTo("https://api.midtrans.test/v2/charge"))
+                .andRespond(withSuccess("{\"status_code\":\"406\",\"status_message\":\"The request could not be completed due to a conflict\"}",
+                        MediaType.APPLICATION_JSON));
+        server.expect(requestTo("https://api.midtrans.test/v2/" + attemptId + "/status"))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(withSuccess("""
+                        {"status_code":"201","transaction_status":"pending","order_id":"%s",
+                         "va_numbers":[{"bank":"bri","va_number":"9988776655"}],"expiry_time":"2026-10-09 18:00:00"}
+                        """.formatted(attemptId), MediaType.APPLICATION_JSON));
+
+        GatewayPayment payment = gateway.create(request(attemptId, Channel.BRI_VA));
+
+        assertThat(payment.providerRef()).isEqualTo(attemptId.toString());
+        assertThat(payment.instruction()).isEqualTo(new Instruction(Instruction.Type.VIRTUAL_ACCOUNT_NUMBER, "9988776655"));
+        server.verify();
+    }
+
+    @Test
+    void serverErrorLeavesTheOutcomeUnknown() {
+        server.expect(requestTo("https://api.midtrans.test/v2/charge"))
+                .andRespond(withSuccess("{\"status_code\":\"500\",\"status_message\":\"Internal server error\"}", MediaType.APPLICATION_JSON));
+        assertThatThrownBy(() -> gateway.create(request(UUID.randomUUID(), Channel.BRI_VA)))
+                .isInstanceOf(GatewayUnavailableException.class);
+
+        server.reset();
+        server.expect(requestTo("https://api.midtrans.test/v2/charge")).andRespond(withServerError());
+        assertThatThrownBy(() -> gateway.create(request(UUID.randomUUID(), Channel.BRI_VA)))
+                .isInstanceOf(GatewayUnavailableException.class);
     }
 
     @Test
