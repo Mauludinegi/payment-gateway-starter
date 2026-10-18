@@ -1,5 +1,6 @@
 target/
 .env
+.env.*
 *.log
 # Product images when Supabase Storage is not configured
 data/
