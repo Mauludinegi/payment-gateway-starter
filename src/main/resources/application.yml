@@ -7,6 +7,12 @@ spring:
   threads:
     virtual:
       enabled: true
+  rabbitmq:
+    host: ${SPRING_RABBITMQ_HOST:localhost}
+    port: ${SPRING_RABBITMQ_PORT:5672}
+    username: ${SPRING_RABBITMQ_USERNAME:payments}
+    password: ${SPRING_RABBITMQ_PASSWORD:payments}
+    addresses: ${SPRING_RABBITMQ_ADDRESSES:}
   datasource:
     # Zero-setup default: in-memory H2. docker compose switches this to PostgreSQL.
     url: ${DATABASE_URL:jdbc:h2:mem:payments;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH}
@@ -97,6 +103,12 @@ payments:
   simulator:
     enabled: ${PAYMENTS_SIMULATOR_ENABLED:true}
     secret: ${PAYMENTS_SIMULATOR_SECRET:local-simulator-secret}
+
+chat:
+  rabbitmq:
+    enabled: ${CHAT_RABBITMQ_ENABLED:false}
+  fcm:
+    credentials-path: ${FCM_CREDENTIALS_PATH:firebase-service-account.json}
 
 ---
 # Local runs (./mvnw spring-boot:run -Dspring-boot.run.profiles=local) also read .env; real environment variables win.

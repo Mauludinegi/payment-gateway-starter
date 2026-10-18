@@ -14,10 +14,25 @@ services:
       interval: 5s
       retries: 10
 
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: payments
+      RABBITMQ_DEFAULT_PASS: payments
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 5s
+      retries: 10
+
   app:
     build: .
     depends_on:
       postgres:
+        condition: service_healthy
+      rabbitmq:
         condition: service_healthy
     env_file:
       - path: .env
@@ -26,6 +41,11 @@ services:
       DATABASE_URL: jdbc:postgresql://postgres:5432/payments
       DATABASE_USERNAME: payments
       DATABASE_PASSWORD: payments
+      CHAT_RABBITMQ_ENABLED: "true"
+      SPRING_RABBITMQ_HOST: rabbitmq
+      SPRING_RABBITMQ_PORT: 5672
+      SPRING_RABBITMQ_USERNAME: payments
+      SPRING_RABBITMQ_PASSWORD: payments
     ports:
       - "8080:8080"
 

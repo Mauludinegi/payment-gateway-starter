@@ -25,7 +25,9 @@ public class UserAuth implements WebMvcConfigurer, HandlerInterceptor {
 
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
-        registry.addInterceptor(this).addPathPatterns("/api/orders", "/api/orders/**", "/api/me/**", "/api/auth/me");
+        registry.addInterceptor(this).addPathPatterns(
+                "/api/orders", "/api/orders/**", "/api/me/**", "/api/auth/me", "/api/chat/**"
+        );
     }
 
     @Override
