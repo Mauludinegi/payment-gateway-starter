@@ -26,6 +26,7 @@ spring:
       maximum-pool-size: ${DATABASE_POOL_SIZE:10}
       data-source-properties:
         gssEncMode: disable
+        sslfactory: org.postgresql.ssl.NonValidatingFactory
   flyway:
     default-schema: ${DATABASE_SCHEMA:public}
     # {vendor} adds the PostgreSQL-only callback that turns on row level security (see afterMigrate.sql).

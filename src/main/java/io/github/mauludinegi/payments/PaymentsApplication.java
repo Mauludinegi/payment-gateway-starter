@@ -34,6 +34,21 @@ public class PaymentsApplication {
                     }
                 }
             }
+
+            if (dbUrl != null && !dbUrl.isBlank()) {
+                try {
+                    java.util.Properties props = new java.util.Properties();
+                    if (dbUser != null) props.setProperty("user", dbUser);
+                    if (dbPass != null) props.setProperty("password", dbPass);
+                    props.setProperty("gssEncMode", "disable");
+                    props.setProperty("sslfactory", "org.postgresql.ssl.NonValidatingFactory");
+                    try (java.sql.Connection conn = java.sql.DriverManager.getConnection(dbUrl, props)) {
+                        System.out.println("[DEBUG] DIRECT JDBC TEST -> SUCCESSFUL CONNECTED TO DB!");
+                    }
+                } catch (Exception e) {
+                    System.out.println("[DEBUG] DIRECT JDBC TEST -> FAILED: " + e.getMessage());
+                }
+            }
             System.out.println("=== [DEBUG] SUPABASE DIAGNOSTIC END ===");
         } catch (Throwable t) {
             System.out.println("[DEBUG] Diagnostic error: " + t.getMessage());
