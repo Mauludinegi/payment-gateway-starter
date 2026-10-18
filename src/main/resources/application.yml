@@ -24,6 +24,8 @@ spring:
     hikari:
       # Per app instance. Keep it small where many instances share one database (Vercel + Supabase pooler).
       maximum-pool-size: ${DATABASE_POOL_SIZE:10}
+      data-source-properties:
+        gssEncMode: disable
   flyway:
     default-schema: ${DATABASE_SCHEMA:public}
     # {vendor} adds the PostgreSQL-only callback that turns on row level security (see afterMigrate.sql).
