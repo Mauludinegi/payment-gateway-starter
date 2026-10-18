@@ -1,6 +1,6 @@
 # Payment Gateway Starter
 
-**Live demo:** [payment-gateway-starter-web.vercel.app](https://payment-gateway-starter-web.vercel.app) · **API:** [payment-gateway-starter.vercel.app](https://payment-gateway-starter.vercel.app/api/channels) · **API docs:** [Swagger UI](https://payment-gateway-starter.vercel.app/swagger-ui.html) ([OpenAPI JSON](https://payment-gateway-starter.vercel.app/v3/api-docs)) · **Web repo:** [payment-gateway-starter-web](https://github.com/Mauludinegi/payment-gateway-starter-web)
+**Live demo:** [payment-gateway-starter-web.vercel.app](https://payment-gateway-starter-web.vercel.app) · **API:** [api.solutionsgie.online](https://api.solutionsgie.online/api/channels) · **API docs:** [Swagger UI](https://api.solutionsgie.online/swagger-ui.html) ([OpenAPI JSON](https://api.solutionsgie.online/v3/api-docs)) · **Web repo:** [payment-gateway-starter-web](https://github.com/Mauludinegi/payment-gateway-starter-web)
 
 Sandbox demo, no real money: the demo routes payments to the Midtrans sandbox and a Xendit test key. `GET /api/environment` reports whether every gateway in use has test credentials, and the store shows its sandbox banner only when it does. What was actually tried against the gateways is listed under [Tested against the gateways](#tested-against-the-gateways).
 
@@ -78,6 +78,17 @@ Without `UPSTASH_REDIS_REST_URL`, sessions are kept in memory (single instance, 
 - **Reviews:** customers with a paid order for a product can give it 1 to 5 stars and an optional comment, one review per product, which they can edit or delete. Other shoppers see only a first name and last initial. Admins can hide a review; hidden reviews leave the average, and the author is told.
 - **The catalogue is cached** in Redis (Upstash) for 10 minutes and cleared after every change to products, stock, or reviews commits. If Redis is down, the database answers. Checkout always reads stock and prices from the database, never from the cache. Keep the Upstash database in the same region as the API and Postgres, or the cache is slower than the database.
 
+### Real-time Live Chat, RabbitMQ, and FCM Push Notifications
+
+The backend features a resilient, distributed customer support live chat architecture:
+- **Server-Sent Events (SSE) Streaming:** Customers and admins receive new messages in real-time through low-latency SSE streams (`GET /api/chat/rooms/{roomId}/events` and `GET /api/admin/chat/rooms/{roomId}/events`). Heartbeats keep connections healthy on both mobile and desktop browsers with automatic client reconnects.
+- **Distributed Event Broker (RabbitMQ / CloudAMQP):** When enabled (`CHAT_RABBITMQ_ENABLED=true`), chat events publish to a topic exchange (`chat.events`) and are fanned out to independent queues:
+  - `chat.sse`: Handled by consumer workers to broadcast events to active SSE connections across scaled, multi-instance backends.
+  - `chat.fcm`: Handled by background workers to trigger push notifications.
+  - If RabbitMQ is disabled or unavailable, an in-process local event hub seamlessly handles dispatch with zero downtime.
+- **Firebase Cloud Messaging (FCM HTTP v1):** Automatically dispatches native push notifications to registered device tokens (`POST /api/chat/fcm-token`). Users receive instant push alerts on mobile Android Chrome and desktop even when the browser tab is closed or running in the background.
+- **Chat Room Lifecycle & Spam Moderation:** Admins can view active conversation counters in real-time, search through visitor queries, filter conversations by status (`OPEN`, `CLOSED`), soft-close/block suspicious sessions, or purge spam rooms directly from the admin dashboard.
+
 ## What it does
 
 ```mermaid
@@ -149,6 +160,11 @@ Interactive docs are at `/swagger-ui.html` (OpenAPI JSON at `/v3/api-docs`). For
 | `GET` | `/api/me/reviews/{productId}` | `{canReview, review, hidden}` for the signed-in customer (session) |
 | `PUT` | `/api/me/reviews/{productId}` | `{rating: 1-5, comment?}`; only after a paid order for it (session) |
 | `DELETE` | `/api/me/reviews/{productId}` | Delete your review (session) |
+| `GET` | `/api/chat/room` | Get or create live chat room for current customer (session) |
+| `GET` | `/api/chat/rooms/{id}/messages` | Chat message history for the room (session) |
+| `POST` | `/api/chat/rooms/{id}/messages` | `{text}` Send a message to customer support (session) |
+| `GET` | `/api/chat/rooms/{id}/events` | Server-Sent Events stream for live customer chat messages (session) |
+| `POST` | `/api/chat/fcm-token` | `{token, deviceInfo?}` Register device token for Firebase Cloud Messaging push notifications (session) |
 | `GET` | `/api/media/products/{file}` | Product images when Supabase Storage is not configured |
 | `POST` | `/webhooks/{xendit\|midtrans}` | Gateway notifications |
 | `POST` | `/api/simulator/orders/{id}/{pay\|fail\|expire}` | Simulator only; disable in production |
@@ -173,6 +189,12 @@ Admin endpoints need the session of an `ADMIN` account (`401` without a session,
 | `DELETE` | `/api/admin/products/{id}/image` | Back to the icon |
 | `GET` | `/api/admin/reviews?productId=&hidden=&page=&size=` | Reviews with the author's email |
 | `PATCH` | `/api/admin/reviews/{id}` | `{hidden: true\|false}` |
+| `GET` | `/api/admin/chat/rooms` | All customer chat rooms with unread counters and status (`OPEN`/`CLOSED`) |
+| `GET` | `/api/admin/chat/rooms/{id}/messages` | Full message history for customer chat room |
+| `POST` | `/api/admin/chat/rooms/{id}/messages` | `{text}` Reply to customer as support admin |
+| `GET` | `/api/admin/chat/rooms/{id}/events` | Server-Sent Events stream for admin live chat room updates |
+| `PATCH` | `/api/admin/chat/rooms/{id}/status` | `{status: "OPEN"\|"CLOSED"}` Close or re-open a chat room |
+| `DELETE` | `/api/admin/chat/rooms/{id}` | Delete/purge a chat room and its messages |
 
 Errors are returned as [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) problem details (`404`, `400`, `409` for an order that is already paid or expired, for a new payment while the previous one is still being confirmed with the gateway, for stock that ran out, or for a product edited since you loaded it, `401` for a missing session or a webhook that fails verification, `403` for a customer on the admin API, `502` when the gateway or the image storage rejects a request).
 
@@ -280,7 +302,7 @@ Not covered: paying through the Midtrans sandbox simulator, and webhooks sent by
 
 ## Stack
 
-Java 21, Spring Boot 4, Spring Data JPA, Flyway, PostgreSQL (H2 for local runs and tests), Redis (Upstash REST), Firebase Authentication (Nimbus JOSE + JWT), Supabase Storage, Docker, GitHub Actions.
+Java 21, Spring Boot 4, Spring Data JPA, Flyway, PostgreSQL (H2 for local runs and tests), RabbitMQ / CloudAMQP (Spring AMQP), Firebase Cloud Messaging (Google Auth FCM HTTP v1), Server-Sent Events (SSE), Redis (Upstash REST), Firebase Authentication (Nimbus JOSE + JWT), Supabase Storage, Docker, GitHub Actions.
 
 ## License
 
